@@ -187,6 +187,14 @@ function bindEvents() {
   $("end-call").addEventListener("click", () => endCall(true));
   $("btn-mute").addEventListener("click", toggleMute);
   $("btn-speaker").addEventListener("click", toggleSpeaker);
+
+  // --- 接続の復帰（iOS の前面復帰・ネットワーク切替で WS を取りこぼさない）---
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") ensureWsAlive();
+  });
+  window.addEventListener("focus", ensureWsAlive);
+  window.addEventListener("pageshow", ensureWsAlive);
+  window.addEventListener("online", ensureWsAlive);
 }
 
 // ============================================================================
@@ -430,6 +438,8 @@ function connectWs() {
     // 定期 ping で接続維持
     clearInterval(state.pingTimer);
     state.pingTimer = setInterval(() => wsSend({ type: "ping" }), 25000);
+    // 再接続直後は presence がずれている可能性があるので友だち一覧を取り直す
+    if (state.me) loadFriends();
   });
 
   ws.addEventListener("message", (e) => handleSignal(JSON.parse(e.data)));
@@ -445,6 +455,17 @@ function connectWs() {
   });
 
   ws.addEventListener("error", () => { try { ws.close(); } catch {} });
+}
+
+// WS が切れていれば即座に張り直す（iOS の前面復帰・ネットワーク切替対策）。
+// iOS Safari はタブが非アクティブ／画面ロックになると WebSocket を切断するため、
+// 復帰イベントで再接続しないと着信（call-invite）を取りこぼしてしまう。
+function ensureWsAlive() {
+  if (!state.me) return;
+  const ws = state.ws;
+  if (!ws || ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
+    connectWs();
+  }
 }
 
 function closeWs() {
@@ -536,6 +557,9 @@ async function startCall(friend) {
   if (state.call) { showToast("すでに通話中です"); return; }
   if (!friend.online) { showToast("相手がオフラインです"); return; }
 
+  // iOS で相手の音声を鳴らせるよう、タップの瞬間に再生を解錠しておく
+  primeRemoteAudio();
+
   // 先にマイクを取得（許可が下りてから発信）
   const gotMic = await ensureLocalStream();
   if (!gotMic) return;
@@ -596,6 +620,9 @@ function onIncomingCall(msg) {
 async function acceptIncoming() {
   if (!state.call || state.call.role !== "callee") return;
 
+  // iOS で相手の音声を鳴らせるよう、タップの瞬間に再生を解錠しておく
+  primeRemoteAudio();
+
   const gotMic = await ensureLocalStream();
   if (!gotMic) {
     wsSend({ type: "call-reject", to: state.call.peerId });
@@ -628,6 +655,17 @@ function onCallCanceled(msg) {
 // ============================================================================
 // WebRTC 本体
 // ============================================================================
+// iOS Safari 対策: 相手の音声を鳴らせるよう、ユーザー操作の瞬間に
+// remoteAudio の再生を「解錠」しておく。ここで一度 play() しておくと、
+// 後から ontrack で srcObject を差し替えても再生が継続できる。
+function primeRemoteAudio() {
+  const audio = $("remoteAudio");
+  try {
+    audio.muted = false;
+    audio.play().catch(() => {});
+  } catch {}
+}
+
 async function ensureLocalStream() {
   if (state.localStream) return true;
   try {
@@ -652,7 +690,11 @@ function setupPeerConnection() {
 
   // 相手の音声を受信 → audio 要素へ
   pc.addEventListener("track", (e) => {
-    $("remoteAudio").srcObject = e.streams[0];
+    const audio = $("remoteAudio");
+    audio.srcObject = e.streams[0];
+    // iOS Safari は srcObject をセットしただけでは再生されないため明示的に play()。
+    // 発信/応答ボタン（ユーザー操作）で primeRemoteAudio() 済みなのでここで再生が通る。
+    audio.play().catch(() => {});
   });
 
   // ICE candidate を相手へ送る
@@ -668,12 +710,25 @@ function setupPeerConnection() {
     const st = pc.connectionState;
     if (st === "connected") {
       onCallConnected();
-    } else if (st === "failed" || st === "disconnected" || st === "closed") {
-      if (state.call && state.call.state === "in-call") {
+    } else if (st === "failed") {
+      // 接続確立に失敗（別ネットワーク間で STUN のみだと起きやすい）。
+      // 通話中でも接続前でも、状態を確実に片付けて相手にも終了を伝える。
+      // ここで片付けないと state.call が残り、以後の着信が「話中」扱いで
+      // 自動拒否され、ポップアップが出なくなる。
+      showToast(
+        state.call.state === "in-call"
+          ? "通話が切断されました"
+          : "相手とうまく接続できませんでした（ネットワーク環境が原因の場合があります）"
+      );
+      endCall(true);
+    } else if (st === "closed") {
+      if (state.call.state === "in-call") {
         showToast("通話が切断されました");
-        teardownCall(false);
       }
+      teardownCall(false);
     }
+    // "disconnected" は一時的な揺らぎのことが多いので、ここでは即切断しない
+    // （回復すれば "connected"、駄目なら "failed" に遷移する）
   });
 
   return pc;
