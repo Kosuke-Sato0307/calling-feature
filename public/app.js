@@ -10,6 +10,7 @@
 
 // ---------- 定数 ----------
 const STORAGE_KEY = "callin_user";
+const AUDIO_KEY = "callin_audio"; // 音量・マイク・スピーカーの設定を保存
 const THEME_COLORS = [
   "#5b8cff", "#22c55e", "#a855f7", "#ec4899",
   "#f59e0b", "#ef4444", "#06b6d4", "#14b8a6",
@@ -48,6 +49,17 @@ const state = {
   speakerOn: false,
   timerInterval: null,
   callStartAt: 0,
+
+  // 音声デバイス・音量の設定
+  volume: 1,            // 通話音量（0〜1）
+  micDeviceId: "",      // 使用するマイクの deviceId（空 = 既定）
+  speakerDeviceId: "",  // 使用するスピーカーの deviceId（空 = 既定）
+
+  // iOS の音量調整用 Web Audio ノード（受信音声を gain 経由で鳴らす）
+  remoteStream: null,
+  remoteSource: null,
+  remoteGain: null,
+  remoteDest: null,
 };
 
 // ---------- 発信音・着信音（Web Audio で生成。音源ファイル不要・無料）----------
@@ -67,6 +79,7 @@ const $ = (id) => document.getElementById(id);
 // ============================================================================
 window.addEventListener("DOMContentLoaded", () => {
   buildColorGrids();
+  loadAudioPrefs();
   bindEvents();
 
   const saved = loadUser();
@@ -156,6 +169,27 @@ function clearUser() {
   localStorage.removeItem(STORAGE_KEY);
 }
 
+// 音量・使用デバイスの設定を保存／復元（端末ごとに localStorage へ）
+function loadAudioPrefs() {
+  try {
+    const raw = localStorage.getItem(AUDIO_KEY);
+    if (!raw) return;
+    const p = JSON.parse(raw);
+    if (typeof p.volume === "number" && p.volume >= 0 && p.volume <= 1) state.volume = p.volume;
+    if (typeof p.micId === "string") state.micDeviceId = p.micId;
+    if (typeof p.speakerId === "string") state.speakerDeviceId = p.speakerId;
+  } catch {}
+}
+function saveAudioPrefs() {
+  try {
+    localStorage.setItem(AUDIO_KEY, JSON.stringify({
+      volume: state.volume,
+      micId: state.micDeviceId,
+      speakerId: state.speakerDeviceId,
+    }));
+  } catch {}
+}
+
 // ============================================================================
 // API 呼び出し
 // ============================================================================
@@ -202,6 +236,15 @@ function bindEvents() {
   $("end-call").addEventListener("click", () => endCall(true));
   $("btn-mute").addEventListener("click", toggleMute);
   $("btn-speaker").addEventListener("click", toggleSpeaker);
+
+  // --- 音量スライダー ---
+  $("vol-slider").addEventListener("input", (e) => {
+    setVolume(Number(e.target.value) / 100);
+  });
+
+  // --- 音声デバイス選択（マイク・スピーカー） ---
+  $("mic-select").addEventListener("change", (e) => applyMicSelection(e.target.value));
+  $("speaker-select").addEventListener("change", (e) => applySpeakerSelection(e.target.value));
 
   // --- 接続の復帰（iOS の前面復帰・ネットワーク切替で WS を取りこぼさない）---
   document.addEventListener("visibilitychange", () => {
@@ -415,6 +458,113 @@ function openSettings() {
     el.classList.toggle("selected", el.dataset.color === state.me.color)
   );
   openModal("settings-modal");
+  populateAudioDevices(); // マイク・スピーカーの一覧を取得して反映
+}
+
+// ============================================================================
+// 音声デバイス（マイク・スピーカー）の選択
+// ============================================================================
+// 端末のマイク／スピーカー一覧を取得してセレクトに反映する。
+// デバイス名（ラベル）はマイク許可後でないと空になるため、必要なら一度だけ許可を求める。
+async function populateAudioDevices() {
+  const micSel = $("mic-select");
+  const spkSel = $("speaker-select");
+  const spkGroup = $("speaker-group");
+  const hint = $("device-hint");
+
+  // スピーカー出力の切替（setSinkId）に非対応なブラウザ（iOS Safari 等）では出力選択を隠す
+  const supportsSink = typeof HTMLMediaElement !== "undefined" &&
+    typeof HTMLMediaElement.prototype.setSinkId === "function";
+  spkGroup.style.display = supportsSink ? "" : "none";
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    micSel.innerHTML = '<option value="">この端末では選択できません</option>';
+    return;
+  }
+
+  try {
+    let devices = await navigator.mediaDevices.enumerateDevices();
+    const hasLabel = devices.some(
+      (d) => (d.kind === "audioinput" || d.kind === "audiooutput") && d.label
+    );
+
+    // ラベルが空 = マイク未許可。通話中でなければ一度だけ許可を求めて機種名を出す。
+    if (!hasLabel && !state.localStream) {
+      try {
+        const tmp = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        tmp.getTracks().forEach((t) => t.stop());
+        devices = await navigator.mediaDevices.enumerateDevices();
+      } catch {
+        hint.textContent = "マイクを許可すると、デバイス名が表示され選べるようになります。";
+      }
+    }
+
+    fillDeviceSelect(micSel, devices, "audioinput", state.micDeviceId, "マイク");
+    if (supportsSink) {
+      fillDeviceSelect(spkSel, devices, "audiooutput", state.speakerDeviceId, "スピーカー");
+    }
+  } catch {
+    micSel.innerHTML = '<option value="">一覧を取得できませんでした</option>';
+  }
+}
+
+function fillDeviceSelect(sel, devices, kind, selectedId, labelJa) {
+  sel.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = "";
+  auto.textContent = "自動（既定のデバイス）";
+  sel.appendChild(auto);
+
+  let idx = 0;
+  let matched = false;
+  devices
+    .filter((d) => d.kind === kind)
+    .forEach((d) => {
+      idx++;
+      const o = document.createElement("option");
+      o.value = d.deviceId;
+      o.textContent = d.label || `${labelJa} ${idx}`;
+      if (d.deviceId && d.deviceId === selectedId) {
+        o.selected = true;
+        matched = true;
+      }
+      sel.appendChild(o);
+    });
+  // 保存済みデバイスが見つからなければ「自動」に戻す
+  if (!matched) sel.value = "";
+}
+
+// マイクを変更。通話中なら replaceTrack で即座に差し替える。
+async function applyMicSelection(deviceId) {
+  state.micDeviceId = deviceId || "";
+  saveAudioPrefs();
+
+  // 通話中なら送信中のマイクを差し替える
+  if (state.pc && state.localStream) {
+    try {
+      const newStream = await getMicStream();
+      const newTrack = newStream.getAudioTracks()[0];
+      if (!newTrack) throw new Error("no track");
+      newTrack.enabled = !state.muted; // ミュート状態を引き継ぐ
+      const sender = state.pc.getSenders().find((s) => s.track && s.track.kind === "audio");
+      if (sender) await sender.replaceTrack(newTrack);
+      state.localStream.getTracks().forEach((t) => t.stop());
+      state.localStream = newStream;
+      showToast("マイクを切り替えました");
+    } catch {
+      showToast("マイクの切り替えに失敗しました");
+    }
+  } else {
+    showToast(deviceId ? "マイクを設定しました（次の通話から有効）" : "マイクを既定に戻しました");
+  }
+}
+
+// スピーカー（出力先）を変更。setSinkId で即反映する。
+async function applySpeakerSelection(deviceId) {
+  state.speakerDeviceId = deviceId || "";
+  saveAudioPrefs();
+  await applySinkId();
+  showToast(deviceId ? "スピーカーを設定しました" : "スピーカーを既定に戻しました");
 }
 
 async function handleSaveSettings() {
@@ -691,6 +841,91 @@ function primeRemoteAudio() {
   } catch {}
 }
 
+// 受信した相手の音声を <audio> に接続する。
+// - iOS Safari は audio.volume を変更できない（常に最大）ため、Web Audio の
+//   GainNode を挟んで音量を可変にする（source → gain → MediaStreamDestination → <audio>）。
+//   <audio> 要素を最終出力に使うことで iOS でも確実に音が鳴る（受話口/スピーカー切替も維持）。
+// - iOS 以外は audio.volume がそのまま効くので、素のストリームを直接貼る（従来どおり）。
+function attachRemoteStream(stream) {
+  const audio = $("remoteAudio");
+  state.remoteStream = stream;
+
+  let routed = false;
+  if (IS_IOS) routed = setupRemoteGain(stream);
+
+  if (routed) {
+    audio.srcObject = state.remoteDest.stream;
+  } else {
+    audio.srcObject = stream;
+    try { audio.volume = state.volume; } catch {}
+  }
+  applySinkId();
+  // iOS Safari は srcObject をセットしただけでは再生されないため明示的に play()。
+  // 発信/応答ボタン（ユーザー操作）で primeRemoteAudio() 済みなのでここで再生が通る。
+  audio.play().catch(() => {});
+}
+
+// iOS 用: 受信ストリームを gain 経由の出力ストリームに変換する。成功したら true。
+function setupRemoteGain(stream) {
+  try {
+    const ctx = ensureAudioCtx();
+    if (!ctx) return false;
+    teardownRemoteGain();
+    const src = ctx.createMediaStreamSource(stream);
+    const gain = ctx.createGain();
+    gain.gain.value = state.volume;
+    const dest = ctx.createMediaStreamDestination();
+    src.connect(gain);
+    gain.connect(dest);
+    state.remoteSource = src;
+    state.remoteGain = gain;
+    state.remoteDest = dest;
+    return true;
+  } catch {
+    teardownRemoteGain();
+    return false;
+  }
+}
+
+function teardownRemoteGain() {
+  try { if (state.remoteSource) state.remoteSource.disconnect(); } catch {}
+  try { if (state.remoteGain) state.remoteGain.disconnect(); } catch {}
+  state.remoteSource = null;
+  state.remoteGain = null;
+  state.remoteDest = null;
+}
+
+// 音量を適用（0〜1）。iOS は gain、その他は audio.volume。設定は保存する。
+function setVolume(v) {
+  state.volume = Math.max(0, Math.min(1, v));
+  saveAudioPrefs();
+  if (state.remoteGain) {
+    state.remoteGain.gain.value = state.volume;
+  } else {
+    try { $("remoteAudio").volume = state.volume; } catch {}
+  }
+  updateVolumeUI();
+}
+
+// スライダー位置・パーセント表示・アイコンを現在の音量に合わせる
+function updateVolumeUI() {
+  const pct = Math.round(state.volume * 100);
+  const slider = $("vol-slider");
+  slider.value = String(pct);
+  slider.style.setProperty("--vol", pct + "%");
+  $("vol-value").textContent = pct + "%";
+  $("vol-icon").textContent = pct === 0 ? "🔇" : pct <= 50 ? "🔉" : "🔊";
+}
+
+// 出力先スピーカーを適用（setSinkId 対応ブラウザのみ。iOS 等は非対応で無視）。
+async function applySinkId() {
+  const audio = $("remoteAudio");
+  if (typeof audio.setSinkId !== "function") return;
+  try {
+    await audio.setSinkId(state.speakerDeviceId || "");
+  } catch {}
+}
+
 // ============================================================================
 // 発信音・着信音
 // ============================================================================
@@ -767,10 +1002,38 @@ function stopTone() {
   tone.oscs = [];
 }
 
+// マイク取得時の制約。選択されたデバイスを使い、エコー除去・雑音抑制を有効化する。
+// （ハウリング対策として echoCancellation を明示的に ON にしている）
+function micConstraints() {
+  const audio = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  };
+  if (state.micDeviceId) audio.deviceId = { exact: state.micDeviceId };
+  return { audio, video: false };
+}
+
+// 指定デバイスでマイクを取得。exact 指定が失敗したら既定デバイスにフォールバック。
+async function getMicStream() {
+  try {
+    return await navigator.mediaDevices.getUserMedia(micConstraints());
+  } catch (err) {
+    if (state.micDeviceId) {
+      // 選択したデバイスが使えない（抜かれた等）→ 既定で取り直す
+      return await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+    }
+    throw err;
+  }
+}
+
 async function ensureLocalStream() {
   if (state.localStream) return true;
   try {
-    state.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    state.localStream = await getMicStream();
     return true;
   } catch (err) {
     showToast("マイクを使用できません。ブラウザの許可設定を確認してください。");
@@ -789,13 +1052,9 @@ function setupPeerConnection() {
     state.localStream.getTracks().forEach((t) => pc.addTrack(t, state.localStream));
   }
 
-  // 相手の音声を受信 → audio 要素へ
+  // 相手の音声を受信 → audio 要素へ（音量調整のため必要なら Web Audio 経由）
   pc.addEventListener("track", (e) => {
-    const audio = $("remoteAudio");
-    audio.srcObject = e.streams[0];
-    // iOS Safari は srcObject をセットしただけでは再生されないため明示的に play()。
-    // 発信/応答ボタン（ユーザー操作）で primeRemoteAudio() 済みなのでここで再生が通る。
-    audio.play().catch(() => {});
+    attachRemoteStream(e.streams[0]);
   });
 
   // ICE candidate を相手へ送る
@@ -893,6 +1152,7 @@ function startInCallUI() {
   $("btn-mute").querySelector(".ctrl-label").textContent = "ミュート";
   $("btn-speaker").classList.remove("active");
   $("btn-speaker").querySelector(".ctrl-icon").textContent = "🔈";
+  updateVolumeUI(); // 音量スライダーを現在値に合わせる
   openModal("incall-modal");
 }
 
@@ -941,7 +1201,10 @@ function toggleSpeaker() {
 function applyAudioRoute() {
   const audio = $("remoteAudio");
   audio.muted = false;
-  audio.volume = 1.0;
+  // 音量は gain（iOS）または audio.volume（その他）で管理する。
+  if (!state.remoteGain) {
+    try { audio.volume = state.volume; } catch {}
+  }
 
   if (!IS_IOS) return;                       // iOS 以外は既定のまま（変更不要）
   if (!state.pc || !audio.srcObject) return; // まだ通話音声が無い
@@ -1010,6 +1273,8 @@ function teardownCall(closeMic) {
   }
   const audio = $("remoteAudio");
   if (audio.srcObject) audio.srcObject = null;
+  teardownRemoteGain();
+  state.remoteStream = null;
 
   // マイクは通話終了時に停止（次回発信時に取り直す）
   if (state.localStream) {

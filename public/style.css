@@ -83,6 +83,33 @@ body {
   font-weight: 600;
 }
 
+.field-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin: 10px 2px 0;
+}
+
+/* セレクト（マイク・スピーカー選択） */
+.select-input {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+    linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-position:
+    calc(100% - 20px) calc(50% - 2px),
+    calc(100% - 15px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 40px;
+  cursor: pointer;
+}
+.select-input option {
+  background: var(--bg-elev);
+  color: var(--text);
+}
+
 .btn-primary {
   background: linear-gradient(135deg, var(--theme), color-mix(in srgb, var(--theme) 70%, #000));
   color: #fff;
@@ -571,6 +598,60 @@ body {
 .ctrl-icon { font-size: 24px; }
 .ctrl-label { font-size: 12px; color: var(--text-dim); }
 .ctrl-btn.active .ctrl-label { color: var(--theme); }
+
+/* 通話中の音量スライダー */
+.volume-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(320px, 80vw);
+  margin: 4px 0 2px;
+}
+.volume-icon { font-size: 20px; flex-shrink: 0; }
+.volume-value {
+  font-size: 12px;
+  color: var(--text-dim);
+  width: 40px;
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.volume-slider {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    var(--theme) 0%,
+    var(--theme) var(--vol, 100%),
+    var(--bg-elev-2) var(--vol, 100%),
+    var(--bg-elev-2) 100%
+  );
+  outline: none;
+  cursor: pointer;
+}
+.volume-slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--theme);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+.volume-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--theme);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
 
 /* ---------- トースト ---------- */
 .toast {
