@@ -1,0 +1,39 @@
+{
+  // Cloudflare Worker の設定ファイル
+  // 詳しい説明は docs/DEPLOY.md を参照してください
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "calling-feature",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-04-01",
+
+  // フロントエンド（public/ 内の HTML/CSS/JS）を配信する設定
+  // Pages を使わず、この Worker だけで静的ファイルも配信します
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    // 存在しないパスへのアクセスは index.html を返す（SPA 用）
+    "not_found_handling": "single-page-application"
+  },
+
+  // 状態管理・シグナリングを担う Durable Object
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "HUB",
+        "class_name": "Hub"
+      }
+    ]
+  },
+
+  // Durable Object の初期化（SQLite 版）。無料プランで動かすために必須です
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Hub"]
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}

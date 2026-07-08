@@ -1,0 +1,14 @@
+{
+  "name": "calling-feature",
+  "version": "1.0.0",
+  "description": "LINE通話風の音声通話アプリ（Cloudflare Workers + Durable Objects + WebRTC）",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "start": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
