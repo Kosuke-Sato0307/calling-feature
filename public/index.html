@@ -106,6 +106,18 @@
       <label class="field-label">テーマカラー</label>
       <div id="set-colors" class="color-grid"></div>
 
+      <label class="field-label" for="mic-select">マイク（音声入力）</label>
+      <select id="mic-select" class="text-input select-input"></select>
+
+      <div id="speaker-group">
+        <label class="field-label" for="speaker-select">スピーカー（音声出力）</label>
+        <select id="speaker-select" class="text-input select-input"></select>
+      </div>
+
+      <p class="field-hint" id="device-hint">
+        USBヘッドセットを使う場合は、上のマイク／スピーカーで選んでください。
+      </p>
+
       <div class="modal-actions">
         <button class="btn-ghost" id="settings-cancel">閉じる</button>
         <button class="btn-primary" id="settings-save">保存</button>
@@ -158,6 +170,12 @@
           <span class="ctrl-icon">🔈</span>
           <span class="ctrl-label">スピーカー</span>
         </button>
+      </div>
+      <div class="volume-row">
+        <span class="volume-icon" id="vol-icon">🔉</span>
+        <input id="vol-slider" class="volume-slider" type="range" min="0" max="100" value="100"
+               aria-label="通話音量" />
+        <span class="volume-value" id="vol-value">100%</span>
       </div>
       <div class="call-actions">
         <button class="call-btn hangup" id="end-call" title="通話終了">📞</button>
