@@ -22,6 +22,12 @@ const RTC_CONFIG = {
   ],
 };
 
+// iOS(iPhone/iPad) 判定。受話口⇔スピーカーの切替は iOS だけの対応。
+// （Windows / Android / PC には「受話口（耳）」の概念が無い）
+const IS_IOS =
+  /iP(hone|od|ad)/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
 // ---------- アプリ状態 ----------
 const state = {
   me: null,          // { id, name, color }
@@ -42,6 +48,15 @@ const state = {
   speakerOn: false,
   timerInterval: null,
   callStartAt: 0,
+};
+
+// ---------- 発信音・着信音（Web Audio で生成。音源ファイル不要・無料）----------
+// リモート音声は iOS の WebAudio 経由だと無音になる既知バグがあるため <audio> 要素で
+// 鳴らすが、こちらの「呼び出し音／着信音」は自前生成のオシレーターなので iOS でも鳴る。
+const tone = {
+  ctx: null,     // AudioContext（遅延生成）
+  timer: null,   // 鳴動パターンの繰り返しタイマー
+  oscs: [],      // 生成中のオシレーター（停止用）
 };
 
 // ---------- 要素取得ヘルパー ----------
@@ -195,6 +210,10 @@ function bindEvents() {
   window.addEventListener("focus", ensureWsAlive);
   window.addEventListener("pageshow", ensureWsAlive);
   window.addEventListener("online", ensureWsAlive);
+
+  // 最初のユーザー操作で AudioContext を解錠しておく。
+  // これにより、あとで（ユーザー操作を伴わない）着信が来ても着信音を鳴らせる。
+  window.addEventListener("pointerdown", () => ensureAudioCtx(), { once: true });
 }
 
 // ============================================================================
@@ -559,6 +578,8 @@ async function startCall(friend) {
 
   // iOS で相手の音声を鳴らせるよう、タップの瞬間に再生を解錠しておく
   primeRemoteAudio();
+  // タップの瞬間に AudioContext を解錠（発信音を鳴らすため）
+  ensureAudioCtx();
 
   // 先にマイクを取得（許可が下りてから発信）
   const gotMic = await ensureLocalStream();
@@ -570,6 +591,7 @@ async function startCall(friend) {
   $("calling-name").textContent = friend.name;
   setAvatar($("calling-avatar"), friend.name, friend.color);
   openModal("calling-modal");
+  startRingback(); // 発信中の呼び出し音
 
   wsSend({ type: "call-invite", to: friend.id, fromName: state.me.name });
 }
@@ -584,6 +606,7 @@ function cancelOutgoing() {
 function onCallAccepted(msg) {
   if (!state.call || state.call.peerId !== msg.from) return;
   // 相手が応答 → こちらから offer を作って送る
+  stopTone(); // 発信音を止める
   state.call.state = "connecting";
   closeModal("calling-modal");
   startInCallUI();
@@ -615,11 +638,13 @@ function onIncomingCall(msg) {
   $("incoming-name").textContent = name;
   setAvatar($("incoming-avatar"), name, color);
   openModal("incoming-modal");
+  startRingtone(); // 着信音
 }
 
 async function acceptIncoming() {
   if (!state.call || state.call.role !== "callee") return;
 
+  stopTone(); // 着信音を止める
   // iOS で相手の音声を鳴らせるよう、タップの瞬間に再生を解錠しておく
   primeRemoteAudio();
 
@@ -664,6 +689,82 @@ function primeRemoteAudio() {
     audio.muted = false;
     audio.play().catch(() => {});
   } catch {}
+}
+
+// ============================================================================
+// 発信音・着信音
+// ============================================================================
+// AudioContext を用意（初回のユーザー操作で解錠しておくと、着信時にも鳴らせる）。
+function ensureAudioCtx() {
+  try {
+    if (!tone.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      tone.ctx = new AC();
+    }
+    if (tone.ctx.state === "suspended") tone.ctx.resume().catch(() => {});
+    return tone.ctx;
+  } catch {
+    return null;
+  }
+}
+
+// 単発のビープ音（複数周波数を重ねられる。前後に緩やかな増減を付けてプツ音を防ぐ）
+function beep(freqs, duration, level, delay = 0) {
+  const ctx = tone.ctx;
+  if (!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const gain = ctx.createGain();
+  gain.connect(ctx.destination);
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(level, t0 + 0.03);
+  gain.gain.setValueAtTime(level, t0 + Math.max(0.05, duration - 0.06));
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  freqs.forEach((f) => {
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = f;
+    osc.connect(gain);
+    osc.start(t0);
+    osc.stop(t0 + duration + 0.03);
+    tone.oscs.push(osc);
+  });
+}
+
+// 発信側の呼び出し音（プルルル…と 1秒鳴って 2秒休む、電話らしい繰り返し）
+function startRingback() {
+  const ctx = ensureAudioCtx();
+  if (!ctx) return;
+  stopTone();
+  const cycle = () => beep([440], 1.0, 0.12);
+  cycle();
+  tone.timer = setInterval(cycle, 3000);
+}
+
+// 着信側の着信音（2音を重ねた「リンリン」を短く2回鳴らして休む）
+function startRingtone() {
+  const ctx = ensureAudioCtx();
+  if (!ctx) return;
+  stopTone();
+  const cycle = () => {
+    beep([880, 660], 0.4, 0.14, 0.0);
+    beep([880, 660], 0.4, 0.14, 0.55);
+  };
+  cycle();
+  tone.timer = setInterval(cycle, 1800);
+}
+
+// 鳴動を止める（発信音・着信音の共通停止）
+function stopTone() {
+  if (tone.timer) {
+    clearInterval(tone.timer);
+    tone.timer = null;
+  }
+  tone.oscs.forEach((o) => {
+    try { o.stop(); } catch {}
+    try { o.disconnect(); } catch {}
+  });
+  tone.oscs = [];
 }
 
 async function ensureLocalStream() {
@@ -791,6 +892,7 @@ function startInCallUI() {
   $("btn-mute").querySelector(".ctrl-icon").textContent = "🎤";
   $("btn-mute").querySelector(".ctrl-label").textContent = "ミュート";
   $("btn-speaker").classList.remove("active");
+  $("btn-speaker").querySelector(".ctrl-icon").textContent = "🔈";
   openModal("incall-modal");
 }
 
@@ -802,6 +904,8 @@ function onCallConnected() {
   clearInterval(state.timerInterval);
   state.timerInterval = setInterval(updateTimer, 1000);
   updateTimer();
+  // 通話確立時に既定の出力先（iOS では受話口）を適用する
+  applyAudioRoute();
 }
 
 function updateTimer() {
@@ -822,17 +926,54 @@ function toggleMute() {
 }
 
 function toggleSpeaker() {
-  const audio = $("remoteAudio");
   state.speakerOn = !state.speakerOn;
   const btn = $("btn-speaker");
   btn.classList.toggle("active", state.speakerOn);
+  btn.querySelector(".ctrl-icon").textContent = state.speakerOn ? "🔊" : "🔈";
+  applyAudioRoute();
+  showToast(state.speakerOn ? "スピーカー: ON" : "スピーカー: OFF（受話口）");
+}
 
-  // setSinkId 対応端末ではスピーカー切替、非対応でも音量で代替
-  if (typeof audio.setSinkId === "function") {
-    // 既定デバイスのまま。ラベルのみ変化（環境によりデバイス選択は限定的）
+// 相手の音声の出力先（受話口 or スピーカー）を、現在の speakerOn に合わせて適用する。
+// - 既定（speakerOn=false）は「受話口（耳）」。スピーカーボタンONで「スピーカー」。
+// - iOS Safari には出力先を選ぶ Web API（setSinkId 等）が無いため、既知の挙動を利用して切り替える。
+// - Windows / Android / PC は受話口の概念が無いので何もしない（常にそのまま）。
+function applyAudioRoute() {
+  const audio = $("remoteAudio");
+  audio.muted = false;
+  audio.volume = 1.0;
+
+  if (!IS_IOS) return;                       // iOS 以外は既定のまま（変更不要）
+  if (!state.pc || !audio.srcObject) return; // まだ通話音声が無い
+
+  if (state.speakerOn) {
+    forceSpeakerRoute();
+  } else {
+    forceEarpieceRoute(audio);
   }
-  audio.volume = state.speakerOn ? 1.0 : 0.85;
-  showToast(state.speakerOn ? "スピーカー: ON" : "スピーカー: OFF");
+}
+
+// iOS Safari: マイクトラックを一瞬 off→on するとルートがスピーカーへ切り替わる（既知の挙動）。
+function forceSpeakerRoute() {
+  const stream = state.localStream;
+  if (!stream) return;
+  const tracks = stream.getAudioTracks();
+  tracks.forEach((t) => (t.enabled = false));
+  setTimeout(() => {
+    // ミュート中なら off のまま維持、そうでなければ元に戻す
+    tracks.forEach((t) => (t.enabled = !state.muted));
+  }, 150);
+}
+
+// iOS Safari: 音声要素へストリームを貼り直すと既定ルート（受話口）へ戻る。
+function forceEarpieceRoute(audio) {
+  const s = audio.srcObject;
+  if (!s) return;
+  audio.srcObject = null;
+  setTimeout(() => {
+    audio.srcObject = s;
+    audio.play().catch(() => {});
+  }, 60);
 }
 
 // ============================================================================
@@ -856,6 +997,8 @@ function onRemoteEnd(msg) {
 function teardownCall(closeMic) {
   clearInterval(state.timerInterval);
   state.timerInterval = null;
+
+  stopTone(); // 発信音・着信音を止める
 
   closeModal("calling-modal");
   closeModal("incoming-modal");
