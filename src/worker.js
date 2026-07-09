@@ -50,6 +50,13 @@ export class Hub {
         created_at INTEGER NOT NULL
       );
     `);
+    // アイコン画像（サムネイルの data URL）用の列を追加。既存 DB には
+    // CREATE TABLE IF NOT EXISTS では列が増えないため、冪等に ALTER する。
+    try {
+      this.sql.exec("ALTER TABLE users ADD COLUMN avatar TEXT");
+    } catch (e) {
+      // 既に列がある場合は "duplicate column name" 等で失敗するので無視する
+    }
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS friends (
         user_id    TEXT NOT NULL,
@@ -109,9 +116,12 @@ export class Hub {
     const body = await safeJson(request);
     const name = (body.name || "").trim();
     const color = normalizeColor(body.color);
+    const avatarCheck = normalizeAvatar(body.avatar);
 
     if (!name) return json({ error: "name_required" }, 400);
     if (name.length > 30) return json({ error: "name_too_long" }, 400);
+    if (!avatarCheck.ok) return json({ error: avatarCheck.error }, 400);
+    const avatar = avatarCheck.value;
 
     // 一意なランダム ID を生成（衝突したら作り直す）
     let id = generateId();
@@ -123,14 +133,15 @@ export class Hub {
 
     const now = Date.now();
     this.sql.exec(
-      "INSERT INTO users (id, name, color, created_at) VALUES (?, ?, ?, ?)",
+      "INSERT INTO users (id, name, color, avatar, created_at) VALUES (?, ?, ?, ?, ?)",
       id,
       name,
       color,
+      avatar,
       now
     );
 
-    return json({ id, name, color });
+    return json({ id, name, color, avatar });
   }
 
   // --------------------------------------------------------------------------
@@ -143,30 +154,31 @@ export class Hub {
 
     if (!id || !name) return json({ error: "id_and_name_required" }, 400);
 
-    const rows = [...this.sql.exec("SELECT id, name, color FROM users WHERE id = ?", id)];
+    const rows = [...this.sql.exec("SELECT id, name, color, avatar FROM users WHERE id = ?", id)];
     if (rows.length === 0) return json({ error: "not_found" }, 404);
 
     const user = rows[0];
     // 名前が一致した場合のみログインを許可する
     if (user.name !== name) return json({ error: "name_mismatch" }, 401);
 
-    return json({ id: user.id, name: user.name, color: user.color });
+    return json({ id: user.id, name: user.name, color: user.color, avatar: user.avatar ?? null });
   }
 
   // --------------------------------------------------------------------------
   // ユーザー検索（ID 検索）
   // --------------------------------------------------------------------------
   handleGetUser(id) {
-    const rows = [...this.sql.exec("SELECT id, name, color FROM users WHERE id = ?", id)];
+    const rows = [...this.sql.exec("SELECT id, name, color, avatar FROM users WHERE id = ?", id)];
     if (rows.length === 0) return json({ error: "not_found" }, 404);
-    return json(rows[0]);
+    const u = rows[0];
+    return json({ id: u.id, name: u.name, color: u.color, avatar: u.avatar ?? null });
   }
 
   // --------------------------------------------------------------------------
   // プロフィール（名前・テーマカラー）更新
   // --------------------------------------------------------------------------
   async handleUpdateUser(id, request) {
-    const rows = [...this.sql.exec("SELECT id, name, color FROM users WHERE id = ?", id)];
+    const rows = [...this.sql.exec("SELECT id, name, color, avatar FROM users WHERE id = ?", id)];
     if (rows.length === 0) return json({ error: "not_found" }, 404);
 
     const body = await safeJson(request);
@@ -177,8 +189,16 @@ export class Hub {
     if (!name) return json({ error: "name_required" }, 400);
     if (name.length > 30) return json({ error: "name_too_long" }, 400);
 
-    this.sql.exec("UPDATE users SET name = ?, color = ? WHERE id = ?", name, color, id);
-    return json({ id, name, color });
+    // avatar は指定があれば更新（null で「頭文字に戻す」）。未指定なら現状維持。
+    let avatar = current.avatar ?? null;
+    if (body.avatar !== undefined) {
+      const avatarCheck = normalizeAvatar(body.avatar);
+      if (!avatarCheck.ok) return json({ error: avatarCheck.error }, 400);
+      avatar = avatarCheck.value;
+    }
+
+    this.sql.exec("UPDATE users SET name = ?, color = ?, avatar = ? WHERE id = ?", name, color, avatar, id);
+    return json({ id, name, color, avatar });
   }
 
   // --------------------------------------------------------------------------
@@ -194,7 +214,7 @@ export class Hub {
 
     // 両者が実在するか確認
     const u = [...this.sql.exec("SELECT id FROM users WHERE id = ?", userId)];
-    const f = [...this.sql.exec("SELECT id, name, color FROM users WHERE id = ?", friendId)];
+    const f = [...this.sql.exec("SELECT id, name, color, avatar FROM users WHERE id = ?", friendId)];
     if (u.length === 0) return json({ error: "user_not_found" }, 404);
     if (f.length === 0) return json({ error: "friend_not_found" }, 404);
 
@@ -228,7 +248,7 @@ export class Hub {
 
     const rows = [
       ...this.sql.exec(
-        `SELECT u.id AS id, u.name AS name, u.color AS color
+        `SELECT u.id AS id, u.name AS name, u.color AS color, u.avatar AS avatar
          FROM friends f
          JOIN users u ON u.id = f.friend_id
          WHERE f.user_id = ?
@@ -241,6 +261,7 @@ export class Hub {
       id: r.id,
       name: r.name,
       color: r.color,
+      avatar: r.avatar ?? null,
       online: this.isOnline(r.id),
     }));
 
@@ -419,4 +440,24 @@ function normalizeColor(color) {
   if (typeof color !== "string") return DEFAULT;
   const c = color.trim();
   return /^#[0-9a-fA-F]{6}$/.test(c) ? c : DEFAULT;
+}
+
+// アイコン画像の上限（サムネイルの data URL 文字数）。約75KB相当。
+// クライアント側で 128px の小さなサムネイルに変換して送る想定。
+const AVATAR_MAX_LEN = 100_000;
+
+/**
+ * アイコン画像（サムネイルの data URL）を検証する。
+ * 戻り値 { ok, value, error }:
+ *   - 未設定（null/空）      → { ok:true, value:null }
+ *   - data:image/ で始まる   → { ok:true, value:文字列 }（上限内のとき）
+ *   - 上限超過               → { ok:false, error:"avatar_too_large" }
+ *   - それ以外の不正な値     → { ok:false, error:"avatar_invalid" }
+ */
+function normalizeAvatar(v) {
+  if (v === undefined || v === null || v === "") return { ok: true, value: null };
+  if (typeof v !== "string") return { ok: false, error: "avatar_invalid" };
+  if (!v.startsWith("data:image/")) return { ok: false, error: "avatar_invalid" };
+  if (v.length > AVATAR_MAX_LEN) return { ok: false, error: "avatar_too_large" };
+  return { ok: true, value: v };
 }
