@@ -984,7 +984,6 @@ function updateVolumeUI() {
   // スライダーの塗りはトラックに対する割合。max は 20 なので 100 換算に直す。
   const fill = Math.round((pct / (VOL_MAX * 100)) * 100);
   slider.style.setProperty("--vol", fill + "%");
-  $("vol-value").textContent = pct + "%";
   $("vol-icon").textContent = pct === 0 ? "🔇" : pct <= 10 ? "🔉" : "🔊";
 }
 

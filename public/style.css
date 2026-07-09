@@ -632,14 +632,6 @@ body {
   margin: 4px 0 2px;
 }
 .volume-icon { font-size: 20px; flex-shrink: 0; }
-.volume-value {
-  font-size: 12px;
-  color: var(--text-dim);
-  width: 40px;
-  text-align: right;
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
-}
 .volume-slider {
   flex: 1;
   appearance: none;
