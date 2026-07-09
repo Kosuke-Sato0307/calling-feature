@@ -936,7 +936,13 @@ body {
 }
 .chat-input {
   flex: 1;
+  box-sizing: border-box; /* 明示: padding/border を含めた高さで min-height を計算するため */
   resize: none;
+  /* 初期高さ（1行分）を autoGrow 後の高さと一致させる。
+     line-height(1.4em = 22.4px) + padding-top/bottom(11px×2 = 22px) = 44.4px。
+     autoGrowChatInput() の Math.min(scrollHeight, 120) も同じ padding/line-height から
+     scrollHeight を算出するため、この値と揃えることで入力前後で高さがズレない。 */
+  min-height: calc(1.4em + 22px);
   max-height: 120px;
   padding: 11px 14px;
   background: var(--bg-elev);

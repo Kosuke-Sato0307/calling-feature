@@ -563,10 +563,11 @@ async function openChat(friend) {
   setAvatar($("chat-avatar"), friend.name, friend.color, friend.avatar);
   updateChatHeaderPresence();
   $("chat-input").value = "";
-  autoGrowChatInput();
   $("chat-messages").innerHTML = `<div class="chat-empty">読み込み中…</div>`;
 
   showScreen("chat");
+  // 画面を表示状態にしてから呼ぶ（非表示中は scrollHeight が 0 になるため）
+  autoGrowChatInput();
 
   // 履歴取得
   const { ok, data } = await api(
@@ -781,6 +782,9 @@ function callLabel(call, mine) {
 function autoGrowChatInput() {
   const el = $("chat-input");
   el.style.height = "auto";
+  // 親要素が display:none（画面非表示中）だと scrollHeight が 0 になるため、
+  // その場合は何もせず CSS の min-height（1行分の高さ）に任せる
+  if (!el.scrollHeight) return;
   el.style.height = Math.min(el.scrollHeight, 120) + "px";
 }
 
