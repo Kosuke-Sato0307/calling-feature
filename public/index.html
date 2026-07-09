@@ -103,6 +103,16 @@
       <label class="field-label" for="set-name">表示名</label>
       <input id="set-name" class="text-input" type="text" maxlength="30" />
 
+      <label class="field-label">アイコン画像</label>
+      <div class="avatar-edit">
+        <div class="avatar avatar-preview" id="set-avatar-preview">?</div>
+        <div class="avatar-edit-actions">
+          <label class="btn-ghost" for="set-avatar-input">画像を選択</label>
+          <input id="set-avatar-input" type="file" accept="image/*" hidden />
+          <button type="button" class="link-btn" id="set-avatar-clear">画像を削除</button>
+        </div>
+      </div>
+
       <label class="field-label">テーマカラー</label>
       <div id="set-colors" class="color-grid"></div>
 
@@ -173,9 +183,9 @@
       </div>
       <div class="volume-row">
         <span class="volume-icon" id="vol-icon">🔉</span>
-        <input id="vol-slider" class="volume-slider" type="range" min="0" max="100" value="100"
+        <input id="vol-slider" class="volume-slider" type="range" min="0" max="20" value="10"
                aria-label="通話音量" />
-        <span class="volume-value" id="vol-value">100%</span>
+        <span class="volume-value" id="vol-value">10%</span>
       </div>
       <div class="call-actions">
         <button class="call-btn hangup" id="end-call" title="通話終了">📞</button>

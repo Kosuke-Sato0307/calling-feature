@@ -11,6 +11,10 @@
 // ---------- 定数 ----------
 const STORAGE_KEY = "callin_user";
 const AUDIO_KEY = "callin_audio"; // 音量・マイク・スピーカーの設定を保存
+// 音量スライダーの上限（実音量）。約10%がちょうどよいため、0〜20%の範囲で
+// 中央（10%）を初期値にする。スライダーの value は「実音量パーセント(0〜20)」。
+const VOL_MAX = 0.2;
+const VOL_DEFAULT = 0.1;
 const THEME_COLORS = [
   "#5b8cff", "#22c55e", "#a855f7", "#ec4899",
   "#f59e0b", "#ef4444", "#06b6d4", "#14b8a6",
@@ -31,7 +35,7 @@ const IS_IOS =
 
 // ---------- アプリ状態 ----------
 const state = {
-  me: null,          // { id, name, color }
+  me: null,          // { id, name, color, avatar }
   ws: null,          // WebSocket
   wsReady: false,
   reconnectTimer: null,
@@ -39,6 +43,7 @@ const state = {
   friends: [],       // 友だち一覧
   regColor: THEME_COLORS[0],
   setColor: THEME_COLORS[0],
+  setAvatar: null,   // 設定モーダルで選択中のアイコン画像（data URL / null）
 
   // 通話関連
   call: null,        // { peerId, peerName, role: 'caller'|'callee', state }
@@ -51,7 +56,7 @@ const state = {
   callStartAt: 0,
 
   // 音声デバイス・音量の設定
-  volume: 1,            // 通話音量（0〜1）
+  volume: VOL_DEFAULT,  // 通話音量（0〜VOL_MAX）。初期値は中央の10%
   micDeviceId: "",      // 使用するマイクの deviceId（空 = 既定）
   speakerDeviceId: "",  // 使用するスピーカーの deviceId（空 = 既定）
 
@@ -175,7 +180,8 @@ function loadAudioPrefs() {
     const raw = localStorage.getItem(AUDIO_KEY);
     if (!raw) return;
     const p = JSON.parse(raw);
-    if (typeof p.volume === "number" && p.volume >= 0 && p.volume <= 1) state.volume = p.volume;
+    // 旧仕様（0〜1）で保存された値も新レンジ（0〜VOL_MAX）にクランプして復元する
+    if (typeof p.volume === "number" && p.volume >= 0) state.volume = Math.min(VOL_MAX, p.volume);
     if (typeof p.micId === "string") state.micDeviceId = p.micId;
     if (typeof p.speakerId === "string") state.speakerDeviceId = p.speakerId;
   } catch {}
@@ -229,6 +235,14 @@ function bindEvents() {
   $("settings-save").addEventListener("click", handleSaveSettings);
   $("logout-btn").addEventListener("click", handleLogout);
 
+  // --- アイコン画像（設定モーダル） ---
+  $("set-avatar-input").addEventListener("change", handleAvatarFile);
+  $("set-avatar-clear").addEventListener("click", () => {
+    state.setAvatar = null;
+    $("set-avatar-input").value = "";
+    updateSettingsAvatarPreview();
+  });
+
   // --- 通話 ---
   $("cancel-call").addEventListener("click", cancelOutgoing);
   $("accept-call").addEventListener("click", acceptIncoming);
@@ -277,7 +291,7 @@ async function handleRegister() {
 
   if (!ok) { err.textContent = "登録に失敗しました。時間をおいて再度お試しください。"; return; }
 
-  state.me = { id: data.id, name: data.name, color: data.color };
+  state.me = { id: data.id, name: data.name, color: data.color, avatar: data.avatar ?? null };
   saveUser(state.me);
   enterApp();
   showToast(`ようこそ、${data.name} さん！ あなたのID: ${data.id}`);
@@ -304,7 +318,7 @@ async function handleLogin() {
     return;
   }
 
-  state.me = { id: data.id, name: data.name, color: data.color };
+  state.me = { id: data.id, name: data.name, color: data.color, avatar: data.avatar ?? null };
   saveUser(state.me);
   enterApp();
   showToast(`おかえりなさい、${data.name} さん！`);
@@ -331,9 +345,7 @@ function enterApp() {
 
   $("me-name").textContent = state.me.name;
   $("me-id").textContent = "ID: " + state.me.id;
-  const av = $("me-avatar");
-  av.textContent = initial(state.me.name);
-  av.style.background = state.me.color;
+  setAvatar($("me-avatar"), state.me.name, state.me.color, state.me.avatar);
 
   showScreen("main");
   connectWs();
@@ -363,7 +375,7 @@ async function handleSearch() {
   const card = document.createElement("div");
   card.className = "result-card";
   card.innerHTML = `
-    <div class="avatar" style="background:${data.color}">${escapeHtml(initial(data.name))}</div>
+    ${avatarMarkup(data.name, data.color, data.avatar)}
     <div class="friend-body">
       <div class="friend-name">${escapeHtml(data.name)}</div>
       <div class="friend-id">ID: ${escapeHtml(data.id)}</div>
@@ -417,7 +429,7 @@ function renderFriends() {
     li.className = "friend-item";
     li.innerHTML = `
       <div class="friend-avatar-wrap">
-        <div class="avatar" style="background:${f.color}">${escapeHtml(initial(f.name))}</div>
+        ${avatarMarkup(f.name, f.color, f.avatar)}
         <span class="presence-dot ${f.online ? "online" : ""}"></span>
       </div>
       <div class="friend-body">
@@ -452,13 +464,66 @@ function renderFriends() {
 function openSettings() {
   $("set-name").value = state.me.name;
   state.setColor = state.me.color;
+  state.setAvatar = state.me.avatar ?? null;
   $("set-error").textContent = "";
+  $("set-avatar-input").value = ""; // 同じファイルを選び直せるようにクリア
+  updateSettingsAvatarPreview();
   // カラーグリッドの選択状態を更新
   [...$("set-colors").children].forEach((el) =>
     el.classList.toggle("selected", el.dataset.color === state.me.color)
   );
   openModal("settings-modal");
   populateAudioDevices(); // マイク・スピーカーの一覧を取得して反映
+}
+
+// 設定モーダルのアイコンプレビューを、選択中の値（state.setAvatar/setColor）で更新する
+function updateSettingsAvatarPreview() {
+  setAvatar($("set-avatar-preview"), state.me ? state.me.name : "", state.setColor, state.setAvatar);
+}
+
+// ファイル選択時: 小さな正方形サムネイルに変換して保留アイコンにする
+async function handleAvatarFile(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  $("set-error").textContent = "";
+  try {
+    state.setAvatar = await fileToAvatarDataUrl(file);
+    updateSettingsAvatarPreview();
+  } catch {
+    $("set-error").textContent = "画像を読み込めませんでした";
+  }
+}
+
+// アップロード画像を 128px の正方形サムネイル（JPEG data URL）に変換する。
+// 元の画像データは保存せず、この小さな「アイコン情報」だけを保存に使う。
+function fileToAvatarDataUrl(file) {
+  const SIZE = 128;
+  return new Promise((resolve, reject) => {
+    if (!file.type || !file.type.startsWith("image/")) {
+      reject(new Error("not_image"));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("read_error"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("decode_error"));
+      img.onload = () => {
+        // 中央を正方形にクロップして 128x128 に描画
+        const side = Math.min(img.width, img.height);
+        const sx = (img.width - side) / 2;
+        const sy = (img.height - side) / 2;
+        const canvas = document.createElement("canvas");
+        canvas.width = SIZE;
+        canvas.height = SIZE;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, SIZE, SIZE);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 // ============================================================================
@@ -576,19 +641,22 @@ async function handleSaveSettings() {
   setBusy($("settings-save"), true);
   const { ok, data } = await api("/api/user/" + encodeURIComponent(state.me.id), {
     method: "PATCH",
-    body: JSON.stringify({ name, color: state.setColor }),
+    body: JSON.stringify({ name, color: state.setColor, avatar: state.setAvatar ?? null }),
   });
   setBusy($("settings-save"), false);
 
-  if (!ok) { err.textContent = "保存に失敗しました"; return; }
+  if (!ok) {
+    err.textContent = data && data.error === "avatar_too_large"
+      ? "画像が大きすぎます。別の画像をお試しください"
+      : "保存に失敗しました";
+    return;
+  }
 
-  state.me = { ...state.me, name: data.name, color: data.color };
+  state.me = { ...state.me, name: data.name, color: data.color, avatar: data.avatar ?? null };
   saveUser(state.me);
   applyTheme(state.me.color);
   $("me-name").textContent = state.me.name;
-  const av = $("me-avatar");
-  av.textContent = initial(state.me.name);
-  av.style.background = state.me.color;
+  setAvatar($("me-avatar"), state.me.name, state.me.color, state.me.avatar);
   closeModal("settings-modal");
   showToast("設定を保存しました");
 }
@@ -735,11 +803,11 @@ async function startCall(friend) {
   const gotMic = await ensureLocalStream();
   if (!gotMic) return;
 
-  state.call = { peerId: friend.id, peerName: friend.name, peerColor: friend.color, role: "caller", state: "calling" };
+  state.call = { peerId: friend.id, peerName: friend.name, peerColor: friend.color, peerAvatar: friend.avatar ?? null, role: "caller", state: "calling" };
 
   // 発信中モーダル表示
   $("calling-name").textContent = friend.name;
-  setAvatar($("calling-avatar"), friend.name, friend.color);
+  setAvatar($("calling-avatar"), friend.name, friend.color, friend.avatar);
   openModal("calling-modal");
   startRingback(); // 発信中の呼び出し音
 
@@ -782,11 +850,12 @@ function onIncomingCall(msg) {
   const name = msg.fromName || "不明なユーザー";
   const friend = state.friends.find((f) => f.id === msg.from);
   const color = friend ? friend.color : "#5b8cff";
+  const avatar = friend ? friend.avatar : null;
 
-  state.call = { peerId: msg.from, peerName: name, peerColor: color, role: "callee", state: "ringing" };
+  state.call = { peerId: msg.from, peerName: name, peerColor: color, peerAvatar: avatar ?? null, role: "callee", state: "ringing" };
 
   $("incoming-name").textContent = name;
-  setAvatar($("incoming-avatar"), name, color);
+  setAvatar($("incoming-avatar"), name, color, avatar);
   openModal("incoming-modal");
   startRingtone(); // 着信音
 }
@@ -897,7 +966,7 @@ function teardownRemoteGain() {
 
 // 音量を適用（0〜1）。iOS は gain、その他は audio.volume。設定は保存する。
 function setVolume(v) {
-  state.volume = Math.max(0, Math.min(1, v));
+  state.volume = Math.max(0, Math.min(VOL_MAX, v));
   saveAudioPrefs();
   if (state.remoteGain) {
     state.remoteGain.gain.value = state.volume;
@@ -909,12 +978,14 @@ function setVolume(v) {
 
 // スライダー位置・パーセント表示・アイコンを現在の音量に合わせる
 function updateVolumeUI() {
-  const pct = Math.round(state.volume * 100);
+  const pct = Math.round(state.volume * 100); // 実音量パーセント（0〜20）
   const slider = $("vol-slider");
   slider.value = String(pct);
-  slider.style.setProperty("--vol", pct + "%");
+  // スライダーの塗りはトラックに対する割合。max は 20 なので 100 換算に直す。
+  const fill = Math.round((pct / (VOL_MAX * 100)) * 100);
+  slider.style.setProperty("--vol", fill + "%");
   $("vol-value").textContent = pct + "%";
-  $("vol-icon").textContent = pct === 0 ? "🔇" : pct <= 50 ? "🔉" : "🔊";
+  $("vol-icon").textContent = pct === 0 ? "🔇" : pct <= 10 ? "🔉" : "🔊";
 }
 
 // 出力先スピーカーを適用（setSinkId 対応ブラウザのみ。iOS 等は非対応で無視）。
@@ -1142,7 +1213,7 @@ async function flushCandidates() {
 // ============================================================================
 function startInCallUI() {
   $("incall-name").textContent = state.call.peerName;
-  setAvatar($("incall-avatar"), state.call.peerName, state.call.peerColor);
+  setAvatar($("incall-avatar"), state.call.peerName, state.call.peerColor, state.call.peerAvatar);
   $("incall-status").textContent = "接続中…";
   $("incall-timer").textContent = "00:00";
   state.muted = false;
@@ -1294,9 +1365,28 @@ function teardownCall(closeMic) {
 function initial(name) {
   return (name || "?").trim().charAt(0).toUpperCase() || "?";
 }
-function setAvatar(el, name, color) {
-  el.textContent = initial(name);
-  el.style.background = color || "#5b8cff";
+// アイコンの HTML 文字列を作る（innerHTML 用）。画像があれば背景画像、無ければ頭文字＋色。
+// data URL の base64 には HTML/CSS 特殊文字が含まれないが、念のため escapeHtml を通す。
+function avatarMarkup(name, color, avatar, cls = "avatar") {
+  if (avatar) {
+    return `<div class="${cls}" style="background-image:url('${escapeHtml(avatar)}');background-size:cover;background-position:center"></div>`;
+  }
+  return `<div class="${cls}" style="background:${escapeHtml(color || "#5b8cff")}">${escapeHtml(initial(name))}</div>`;
+}
+
+// アイコン要素を描画する。avatar（画像の data URL）があれば画像、無ければ頭文字＋色。
+function setAvatar(el, name, color, avatar) {
+  if (avatar) {
+    el.textContent = "";
+    el.style.background = color || "#5b8cff";
+    el.style.backgroundImage = `url("${avatar}")`;
+    el.style.backgroundSize = "cover";
+    el.style.backgroundPosition = "center";
+  } else {
+    el.textContent = initial(name);
+    el.style.background = color || "#5b8cff";
+    el.style.backgroundImage = "none";
+  }
 }
 function setBusy(btn, busy) {
   btn.disabled = busy;

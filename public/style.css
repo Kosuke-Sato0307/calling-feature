@@ -325,6 +325,30 @@ body {
   font-size: 44px;
 }
 
+/* 設定モーダルのアイコン編集欄 */
+.avatar-edit {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+.avatar-preview {
+  width: 64px;
+  height: 64px;
+  font-size: 26px;
+}
+.avatar-edit-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+/* ラベルを btn-ghost として使うため、クリックしやすくする */
+.avatar-edit-actions label.btn-ghost {
+  cursor: pointer;
+  display: inline-block;
+}
+
 /* ---------- メイン領域 ---------- */
 .app-main {
   max-width: 620px;
