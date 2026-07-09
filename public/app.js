@@ -156,6 +156,12 @@ function showScreen(name) {
 function openModal(id) { $(id).classList.add("active"); }
 function closeModal(id) { $(id).classList.remove("active"); }
 
+// 友だちのアイコン画像を拡大表示する（<img> を使わず背景画像で表示し、保存操作を抑止）
+function openAvatarPreview(avatar) {
+  $("avatar-preview-stage").style.backgroundImage = `url("${avatar}")`;
+  openModal("avatar-preview-modal");
+}
+
 // ============================================================================
 // localStorage
 // ============================================================================
@@ -234,6 +240,15 @@ function bindEvents() {
   $("settings-cancel").addEventListener("click", () => closeModal("settings-modal"));
   $("settings-save").addEventListener("click", handleSaveSettings);
   $("logout-btn").addEventListener("click", handleLogout);
+
+  // --- アイコン拡大表示 ---
+  const previewModal = $("avatar-preview-modal");
+  previewModal.addEventListener("click", () => closeModal("avatar-preview-modal"));
+  $("avatar-preview-close").addEventListener("click", () => closeModal("avatar-preview-modal"));
+  // 右クリック保存・ドラッグによる画像取得を抑止（ステージは pointer-events:none のため
+  // オーバーレイ全体で受ける）
+  previewModal.addEventListener("contextmenu", (e) => e.preventDefault());
+  previewModal.addEventListener("dragstart", (e) => e.preventDefault());
 
   // --- アイコン画像（設定モーダル） ---
   $("set-avatar-input").addEventListener("change", handleAvatarFile);
@@ -439,6 +454,13 @@ function renderFriends() {
           ${f.online ? "● オンライン" : "○ オフライン"}
         </div>
       </div>`;
+
+    // アイコン画像がある場合はタップで拡大表示
+    if (f.avatar) {
+      const av = li.querySelector(".friend-avatar-wrap .avatar");
+      av.classList.add("clickable");
+      av.addEventListener("click", () => openAvatarPreview(f.avatar));
+    }
 
     // ID コピー
     li.querySelector(".friend-id").addEventListener("click", () =>

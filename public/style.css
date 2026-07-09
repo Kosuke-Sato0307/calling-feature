@@ -520,6 +520,39 @@ body {
 .modal-actions .btn-primary,
 .modal-actions .btn-ghost { flex: 1; }
 
+/* アイコン拡大表示 */
+.friend-avatar-wrap .avatar.clickable { cursor: pointer; }
+
+.avatar-preview-overlay {
+  padding: 40px 20px;
+}
+.avatar-preview-stage {
+  width: min(90vw, 90vh, 640px);
+  height: min(90vw, 90vh, 640px);
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
+  /* ダウンロード抑止（右クリック保存・ドラッグ・iOS長押しメニューを防ぐ） */
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.avatar-preview-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+}
+
 .divider {
   border: none;
   border-top: 1px solid var(--border);
