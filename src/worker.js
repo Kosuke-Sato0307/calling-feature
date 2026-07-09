@@ -73,6 +73,49 @@ export class Hub {
         PRIMARY KEY (user_id, friend_id)
       );
     `);
+
+    // チャットメッセージ（テキスト・通話履歴を同じテーブルに保存）。
+    //   kind = 'text' … 通常のテキストメッセージ（body に本文）
+    //   kind = 'call' … 通話履歴（body に JSON: {"result","duration"}）
+    //   read_at = NULL … 受信者がまだ確認していない（未読）
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_id   TEXT NOT NULL,
+        receiver_id TEXT NOT NULL,
+        kind        TEXT NOT NULL DEFAULT 'text',
+        body        TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        read_at     INTEGER
+      );
+    `);
+    // 2 者間の会話を時系列で引くための索引と、未読件数を数えるための索引。
+    this.sql.exec(
+      "CREATE INDEX IF NOT EXISTS idx_messages_pair ON messages (sender_id, receiver_id, id)"
+    );
+    this.sql.exec(
+      "CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages (receiver_id, sender_id, read_at)"
+    );
+
+    // 古いメッセージを自動削除するための日次アラームを（未設定なら）仕掛ける。
+    // constructor は同期関数のため await せず、設定済みかどうかだけ確認して予約する。
+    this.state.storage.getAlarm().then((at) => {
+      if (at === null) this.state.storage.setAlarm(Date.now() + CLEANUP_INTERVAL_MS);
+    }).catch(() => {});
+  }
+
+  // --------------------------------------------------------------------------
+  // 日次アラーム: 保存期間を過ぎたメッセージを削除し、次回を予約する。
+  // （無料枠のストレージを圧迫しないよう、古い履歴は自動的に消える）
+  // --------------------------------------------------------------------------
+  async alarm() {
+    const cutoff = Date.now() - MESSAGE_RETENTION_MS;
+    try {
+      this.sql.exec("DELETE FROM messages WHERE created_at < ?", cutoff);
+    } catch {
+      // 削除に失敗しても次回に再挑戦するだけなので無視する
+    }
+    this.state.storage.setAlarm(Date.now() + CLEANUP_INTERVAL_MS);
   }
 
   // --------------------------------------------------------------------------
@@ -102,6 +145,22 @@ export class Hub {
       // --- 友だち一覧 ---
       if (url.pathname === "/api/friends" && request.method === "GET") {
         return this.handleListFriends(url);
+      }
+      // --- チャット: 会話履歴の取得 ---
+      if (url.pathname === "/api/messages" && request.method === "GET") {
+        return this.handleListMessages(url);
+      }
+      // --- チャット: テキスト送信 ---
+      if (url.pathname === "/api/messages" && request.method === "POST") {
+        return this.handleSendMessage(request);
+      }
+      // --- チャット: 既読にする ---
+      if (url.pathname === "/api/messages/read" && request.method === "POST") {
+        return this.handleMarkRead(request);
+      }
+      // --- チャット: 通話履歴を記録する ---
+      if (url.pathname === "/api/messages/call" && request.method === "POST") {
+        return this.handleRecordCall(request);
       }
       // --- 拡大表示用の高画質アイコン取得 ( /api/user/:id/avatar ) ---
       const avatarMatch = url.pathname.match(/^\/api\/user\/([^/]+)\/avatar$/);
@@ -307,9 +366,172 @@ export class Hub {
       color: r.color,
       avatar: r.avatar ?? null,
       online: this.isOnline(r.id),
+      unread: this.countUnread(userId, r.id),
+      lastMessage: this.lastMessageWith(userId, r.id),
     }));
 
+    // 直近のやり取りがある友だちを上に並べる（LINE のトーク一覧のように）。
+    friends.sort((a, b) => {
+      const ta = a.lastMessage ? a.lastMessage.at : 0;
+      const tb = b.lastMessage ? b.lastMessage.at : 0;
+      return tb - ta;
+    });
+
     return json({ friends });
+  }
+
+  // --------------------------------------------------------------------------
+  // チャット: 会話履歴の取得（userId と peerId の 2 者間、古い順）
+  // --------------------------------------------------------------------------
+  handleListMessages(url) {
+    const userId = (url.searchParams.get("userId") || "").trim();
+    const peerId = (url.searchParams.get("peerId") || "").trim();
+    if (!userId || !peerId) return json({ error: "ids_required" }, 400);
+
+    // 上限（最新 MESSAGE_PAGE 件）を id 降順で取り、古い順に並べ直して返す。
+    const rows = [
+      ...this.sql.exec(
+        `SELECT id, sender_id, receiver_id, kind, body, created_at, read_at
+         FROM messages
+         WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)
+         ORDER BY id DESC
+         LIMIT ?`,
+        userId,
+        peerId,
+        peerId,
+        userId,
+        MESSAGE_PAGE
+      ),
+    ];
+    rows.reverse();
+    return json({ messages: rows.map(rowToMessage) });
+  }
+
+  // --------------------------------------------------------------------------
+  // チャット: テキストメッセージの送信
+  // --------------------------------------------------------------------------
+  async handleSendMessage(request) {
+    const body = await safeJson(request);
+    const from = (body.from || "").trim();
+    const to = (body.to || "").trim();
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+
+    if (!from || !to) return json({ error: "ids_required" }, 400);
+    if (!text) return json({ error: "text_required" }, 400);
+    if (text.length > MESSAGE_MAX_LEN) return json({ error: "text_too_long" }, 400);
+    // 友だち同士でないとやり取りできない
+    if (!this.areFriends(from, to)) return json({ error: "not_friends" }, 403);
+
+    const message = this.insertMessage(from, to, "text", text);
+    // 相手がオンラインなら即配信（オフラインでも履歴として保存済み）
+    this.sendTo(to, { type: "chat-message", message });
+    return json({ message });
+  }
+
+  // --------------------------------------------------------------------------
+  // チャット: 通話履歴の記録（発信者側から result と duration を受け取る）
+  // --------------------------------------------------------------------------
+  async handleRecordCall(request) {
+    const body = await safeJson(request);
+    const from = (body.from || "").trim();
+    const to = (body.to || "").trim();
+    const result = (body.result || "").trim();
+    const duration = Number.isFinite(body.duration) ? Math.max(0, Math.floor(body.duration)) : 0;
+
+    if (!from || !to) return json({ error: "ids_required" }, 400);
+    if (!CALL_RESULTS.includes(result)) return json({ error: "invalid_result" }, 400);
+    if (!this.areFriends(from, to)) return json({ error: "not_friends" }, 403);
+
+    const payload = JSON.stringify({ result, duration });
+    const message = this.insertMessage(from, to, "call", payload);
+    this.sendTo(to, { type: "chat-message", message });
+    return json({ message });
+  }
+
+  // --------------------------------------------------------------------------
+  // チャット: 相手からのメッセージをすべて既読にする
+  // --------------------------------------------------------------------------
+  async handleMarkRead(request) {
+    const body = await safeJson(request);
+    const userId = (body.userId || "").trim();
+    const peerId = (body.peerId || "").trim();
+    if (!userId || !peerId) return json({ error: "ids_required" }, 400);
+
+    const now = Date.now();
+    this.sql.exec(
+      "UPDATE messages SET read_at = ? WHERE receiver_id = ? AND sender_id = ? AND read_at IS NULL",
+      now,
+      userId,
+      peerId
+    );
+    // 送信者（相手）がオンラインなら「既読になった」と通知して既読表示を更新させる
+    this.sendTo(peerId, { type: "messages-read", by: userId });
+    return json({ ok: true });
+  }
+
+  // --- チャット関連のヘルパー -------------------------------------------------
+
+  /** メッセージを1件保存し、クライアント向けの形に整えて返す */
+  insertMessage(from, to, kind, body) {
+    const now = Date.now();
+    this.sql.exec(
+      "INSERT INTO messages (sender_id, receiver_id, kind, body, created_at) VALUES (?, ?, ?, ?, ?)",
+      from,
+      to,
+      kind,
+      body,
+      now
+    );
+    // DO は単一スレッドで動くため、直後の last_insert_rowid() は今の INSERT の id。
+    const id = [...this.sql.exec("SELECT last_insert_rowid() AS id")][0].id;
+    return rowToMessage({
+      id,
+      sender_id: from,
+      receiver_id: to,
+      kind,
+      body,
+      created_at: now,
+      read_at: null,
+    });
+  }
+
+  /** userId から見た peerId からの未読件数 */
+  countUnread(userId, peerId) {
+    const rows = [
+      ...this.sql.exec(
+        "SELECT COUNT(*) AS n FROM messages WHERE receiver_id = ? AND sender_id = ? AND read_at IS NULL",
+        userId,
+        peerId
+      ),
+    ];
+    return rows.length ? Number(rows[0].n) : 0;
+  }
+
+  /** userId と peerId の直近1件（一覧のプレビュー用） */
+  lastMessageWith(userId, peerId) {
+    const rows = [
+      ...this.sql.exec(
+        `SELECT id, sender_id, receiver_id, kind, body, created_at, read_at
+         FROM messages
+         WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)
+         ORDER BY id DESC LIMIT 1`,
+        userId,
+        peerId,
+        peerId,
+        userId
+      ),
+    ];
+    if (rows.length === 0) return null;
+    const m = rowToMessage(rows[0]);
+    return { text: messagePreview(m), at: m.createdAt, mine: m.from === userId, kind: m.kind };
+  }
+
+  /** 2 者が友だち関係にあるか */
+  areFriends(a, b) {
+    const rows = [
+      ...this.sql.exec("SELECT 1 FROM friends WHERE user_id = ? AND friend_id = ?", a, b),
+    ];
+    return rows.length > 0;
   }
 
   // --------------------------------------------------------------------------
@@ -463,6 +685,45 @@ async function safeJson(request) {
   } catch {
     return {};
   }
+}
+
+// メッセージ関連の定数
+const MESSAGE_MAX_LEN = 2000;          // テキスト1件の最大文字数
+const MESSAGE_PAGE = 300;              // 会話履歴で一度に返す最大件数（最新から）
+const MESSAGE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000; // 保存期間（90日）
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;       // 自動削除アラームの間隔（1日）
+const CALL_RESULTS = ["answered", "missed", "rejected", "canceled", "failed"]; // 通話結果
+
+/**
+ * SQLite の1行をクライアント向けのメッセージ表現に変換する。
+ *   共通: { id, from, to, kind, createdAt, read }
+ *   text: { ..., text }
+ *   call: { ..., call: { result, duration } }
+ */
+function rowToMessage(r) {
+  const base = {
+    id: r.id,
+    from: r.sender_id,
+    to: r.receiver_id,
+    kind: r.kind,
+    createdAt: r.created_at,
+    read: r.read_at != null,
+  };
+  if (r.kind === "call") {
+    let call = { result: "answered", duration: 0 };
+    try {
+      const parsed = JSON.parse(r.body);
+      call = { result: parsed.result, duration: parsed.duration || 0 };
+    } catch {}
+    return { ...base, call };
+  }
+  return { ...base, text: r.body };
+}
+
+/** 一覧のプレビュー用に、メッセージを短い文字列にする */
+function messagePreview(m) {
+  if (m.kind === "call") return "通話";
+  return m.text || "";
 }
 
 /** 読みやすいランダム ID を生成（紛らわしい文字を除いた 8 桁） */

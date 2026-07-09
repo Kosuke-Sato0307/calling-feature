@@ -41,6 +41,7 @@ const state = {
   reconnectTimer: null,
   pingTimer: null,
   friends: [],       // 友だち一覧
+  chat: null,        // 開いているトーク { peerId, peerName, peerColor, peerAvatar, messages: [] }
   regColor: THEME_COLORS[0],
   setColor: THEME_COLORS[0],
   setAvatar: null,   // 設定モーダルで選択中のアイコン画像（一覧用サムネイル。data URL / null）
@@ -151,7 +152,7 @@ function buildGrid(container, onPick, getCurrent) {
 // 画面切替
 // ============================================================================
 function showScreen(name) {
-  ["register", "login", "main"].forEach((s) => {
+  ["register", "login", "main", "chat"].forEach((s) => {
     $("screen-" + s).classList.toggle("active", s === name);
   });
 }
@@ -279,6 +280,22 @@ function bindEvents() {
     $("set-avatar-input").value = "";
     updateSettingsAvatarPreview();
   });
+
+  // --- チャット ---
+  $("chat-back").addEventListener("click", closeChat);
+  $("chat-send").addEventListener("click", sendChatMessage);
+  $("chat-call").addEventListener("click", () => {
+    if (state.chat) startCall(chatPeerAsFriend());
+  });
+  const chatInput = $("chat-input");
+  // Enter で送信 / Shift+Enter で改行（スマホは改行優先のため PC 幅のときだけ Enter 送信）
+  chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && window.innerWidth >= 720) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
+  chatInput.addEventListener("input", autoGrowChatInput);
 
   // --- 通話 ---
   $("cancel-call").addEventListener("click", cancelOutgoing);
@@ -465,6 +482,16 @@ function renderFriends() {
   state.friends.forEach((f) => {
     const li = document.createElement("li");
     li.className = "friend-item";
+
+    // 直近メッセージのプレビュー（無ければ ID を出す）
+    const lm = f.lastMessage;
+    const previewText = lm
+      ? (lm.kind === "call" ? "📞 通話" : (lm.mine ? "自分: " : "") + lm.text)
+      : "";
+    const preview = lm
+      ? `<div class="friend-preview ${f.unread ? "unread" : ""}">${escapeHtml(previewText)}</div>`
+      : `<div class="friend-id" data-copy="${escapeHtml(f.id)}">ID: ${escapeHtml(f.id)} 📋</div>`;
+
     li.innerHTML = `
       <div class="friend-avatar-wrap">
         ${avatarMarkup(f.name, f.color, f.avatar)}
@@ -472,23 +499,34 @@ function renderFriends() {
       </div>
       <div class="friend-body">
         <div class="friend-name">${escapeHtml(f.name)}</div>
-        <div class="friend-id" data-copy="${escapeHtml(f.id)}">ID: ${escapeHtml(f.id)} 📋</div>
-        <div class="friend-status ${f.online ? "online" : "offline"}">
-          ${f.online ? "● オンライン" : "○ オフライン"}
-        </div>
+        ${preview}
+      </div>
+      <div class="friend-meta">
+        ${lm ? `<span class="friend-time">${escapeHtml(formatListTime(lm.at))}</span>` : ""}
+        ${f.unread ? `<span class="unread-badge">${f.unread > 99 ? "99+" : f.unread}</span>` : ""}
       </div>`;
+
+    // 行のタップでトークを開く
+    li.addEventListener("click", () => openChat(f));
 
     // アイコン画像がある場合はタップで拡大表示（拡大時は高画質版を取りに行く）
     if (f.avatar) {
       const av = li.querySelector(".friend-avatar-wrap .avatar");
       av.classList.add("clickable");
-      av.addEventListener("click", () => openAvatarPreview(f.id, f.avatar));
+      av.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openAvatarPreview(f.id, f.avatar);
+      });
     }
 
-    // ID コピー
-    li.querySelector(".friend-id").addEventListener("click", () =>
-      copyText(f.id, "IDをコピーしました")
-    );
+    // プレビューが無い（ID 表示の）場合はタップで ID コピー
+    const idEl = li.querySelector(".friend-id");
+    if (idEl) {
+      idEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        copyText(f.id, "IDをコピーしました");
+      });
+    }
 
     // 通話ボタン
     const callBtn = document.createElement("button");
@@ -496,11 +534,259 @@ function renderFriends() {
     callBtn.innerHTML = "📞";
     callBtn.title = f.online ? "通話する" : "オフラインのため通話できません";
     callBtn.disabled = !f.online;
-    callBtn.addEventListener("click", () => startCall(f));
+    callBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      startCall(f);
+    });
     li.appendChild(callBtn);
 
     list.appendChild(li);
   });
+}
+
+// ============================================================================
+// チャット
+// ============================================================================
+// 友だち一覧の項目からトークを開く。履歴を取得して表示し、未読を既読にする。
+async function openChat(friend) {
+  state.chat = {
+    peerId: friend.id,
+    peerName: friend.name,
+    peerColor: friend.color,
+    peerAvatar: friend.avatar ?? null,
+    online: !!friend.online,
+    messages: [],
+  };
+
+  // ヘッダーを即座に反映
+  $("chat-peer-name").textContent = friend.name;
+  setAvatar($("chat-avatar"), friend.name, friend.color, friend.avatar);
+  updateChatHeaderPresence();
+  $("chat-input").value = "";
+  autoGrowChatInput();
+  $("chat-messages").innerHTML = `<div class="chat-empty">読み込み中…</div>`;
+
+  showScreen("chat");
+
+  // 履歴取得
+  const { ok, data } = await api(
+    `/api/messages?userId=${encodeURIComponent(state.me.id)}&peerId=${encodeURIComponent(friend.id)}`
+  );
+  // 取得中に別のトークへ移動していたら破棄
+  if (!state.chat || state.chat.peerId !== friend.id) return;
+  state.chat.messages = ok && data.messages ? data.messages : [];
+  renderChat();
+  scrollChatToBottom();
+
+  // 相手からの未読を既読にする（相手がオンラインなら既読通知が届く）
+  markChatRead();
+}
+
+function closeChat() {
+  state.chat = null;
+  showScreen("main");
+  loadFriends(); // プレビュー・未読バッジを最新化
+}
+
+// state.chat を startCall に渡せる friend 形に整える
+function chatPeerAsFriend() {
+  const c = state.chat;
+  const f = state.friends.find((x) => x.id === c.peerId);
+  return {
+    id: c.peerId,
+    name: c.peerName,
+    color: c.peerColor,
+    avatar: c.peerAvatar,
+    online: f ? f.online : c.online,
+  };
+}
+
+// トーク画面のヘッダーのオンライン表示を更新
+function updateChatHeaderPresence() {
+  if (!state.chat) return;
+  const online = state.chat.online;
+  $("chat-presence").classList.toggle("online", online);
+  const st = $("chat-peer-status");
+  st.textContent = online ? "● オンライン" : "○ オフライン";
+  st.classList.toggle("online", online);
+  const callBtn = $("chat-call");
+  callBtn.disabled = !online;
+  callBtn.title = online ? "通話する" : "オフラインのため通話できません";
+}
+
+// テキストメッセージを送信する
+async function sendChatMessage() {
+  if (!state.chat) return;
+  const input = $("chat-input");
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = "";
+  autoGrowChatInput();
+  input.focus();
+
+  const { ok, data } = await api("/api/messages", {
+    method: "POST",
+    body: JSON.stringify({ from: state.me.id, to: state.chat.peerId, text }),
+  });
+
+  if (!ok || !data.message) {
+    showToast("メッセージを送信できませんでした");
+    input.value = text; // 入力を戻す
+    autoGrowChatInput();
+    return;
+  }
+
+  // 送ったトークがまだ開いていれば末尾に追加
+  if (state.chat && state.chat.peerId === data.message.to) {
+    state.chat.messages.push(data.message);
+    renderChat();
+    scrollChatToBottom();
+  }
+}
+
+// 相手からの未読を既読にする（サーバーが相手へ既読通知を送る）
+async function markChatRead() {
+  if (!state.chat) return;
+  const hasUnread = state.chat.messages.some((m) => m.from === state.chat.peerId && !m.read);
+  if (!hasUnread) return;
+  await api("/api/messages/read", {
+    method: "POST",
+    body: JSON.stringify({ userId: state.me.id, peerId: state.chat.peerId }),
+  });
+}
+
+// WebSocket で新着メッセージ（テキスト or 通話履歴）を受け取ったとき
+function onChatMessage(msg) {
+  const m = msg.message;
+  if (!m) return;
+
+  // 開いているトークの相手からのメッセージなら、その場に追加して既読化
+  if (state.chat && m.from === state.chat.peerId) {
+    state.chat.messages.push(m);
+    renderChat();
+    scrollChatToBottom();
+    markChatRead();
+    return;
+  }
+
+  // それ以外は一覧のプレビュー・未読バッジを更新（メイン画面表示中のみ意味がある）
+  loadFriends();
+}
+
+// 相手が自分のメッセージを既読にしたとき（既読表示を更新）
+function onMessagesRead(msg) {
+  if (!state.chat || msg.by !== state.chat.peerId) return;
+  let changed = false;
+  state.chat.messages.forEach((m) => {
+    if (m.from === state.me.id && !m.read) {
+      m.read = true;
+      changed = true;
+    }
+  });
+  if (changed) renderChat();
+}
+
+// 会話全体を描画する（日付区切り・吹き出し・時刻・既読を含む）
+function renderChat() {
+  const box = $("chat-messages");
+  const msgs = state.chat ? state.chat.messages : [];
+  if (msgs.length === 0) {
+    box.innerHTML = `<div class="chat-empty">まだメッセージはありません。<br />最初のメッセージを送ってみましょう。</div>`;
+    return;
+  }
+
+  // 自分の最後のメッセージが既読なら、そこにだけ「既読」を表示する（LINE 風）
+  let lastMineIdx = -1;
+  msgs.forEach((m, i) => { if (m.from === state.me.id) lastMineIdx = i; });
+  const showReadAt = lastMineIdx >= 0 && msgs[lastMineIdx].read ? lastMineIdx : -1;
+
+  box.innerHTML = "";
+  let prevDay = "";
+  msgs.forEach((m, i) => {
+    const day = dayKey(m.createdAt);
+    if (day !== prevDay) {
+      const sep = document.createElement("div");
+      sep.className = "chat-date-sep";
+      sep.textContent = formatDateSep(m.createdAt);
+      box.appendChild(sep);
+      prevDay = day;
+    }
+    box.appendChild(
+      m.kind === "call" ? callRowEl(m) : textRowEl(m, i === showReadAt)
+    );
+  });
+}
+
+// テキストメッセージ1件の要素を作る
+function textRowEl(m, showRead) {
+  const mine = m.from === state.me.id;
+  const row = document.createElement("div");
+  row.className = "msg-row " + (mine ? "mine" : "theirs");
+
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  bubble.textContent = m.text || "";
+
+  const side = document.createElement("div");
+  side.className = "msg-side";
+  if (mine && showRead) {
+    const r = document.createElement("span");
+    r.className = "msg-read";
+    r.textContent = "既読";
+    side.appendChild(r);
+  }
+  const t = document.createElement("span");
+  t.textContent = formatMsgTime(m.createdAt);
+  side.appendChild(t);
+
+  row.appendChild(bubble);
+  row.appendChild(side);
+  return row;
+}
+
+// 通話履歴1件の要素を作る（中央寄せのシステム表示）
+function callRowEl(m) {
+  const mine = m.from === state.me.id; // 自分＝発信側
+  const info = callLabel(m.call, mine);
+  const el = document.createElement("div");
+  el.className = "msg-call" + (info.missed ? " missed" : "");
+  const dur = m.call.result === "answered" ? `<span class="call-time">${formatDuration(m.call.duration)}</span>` : "";
+  el.innerHTML = `<span class="call-emoji">${info.emoji}</span><span>${info.label}</span>${dur}<span class="call-time">${escapeHtml(formatMsgTime(m.createdAt))}</span>`;
+  return el;
+}
+
+// 通話結果を表示テキストに変換する（mine = 自分が発信した側か）
+function callLabel(call, mine) {
+  switch (call.result) {
+    case "answered":
+      return { emoji: "📞", label: mine ? "発信" : "着信", missed: false };
+    case "rejected":
+      return mine
+        ? { emoji: "📞", label: "応答なし", missed: false }
+        : { emoji: "📵", label: "着信を拒否", missed: true };
+    case "canceled":
+    case "missed":
+      return mine
+        ? { emoji: "📞", label: "キャンセルした発信", missed: false }
+        : { emoji: "📵", label: "不在着信", missed: true };
+    case "failed":
+      return { emoji: "⚠️", label: "通話に失敗", missed: true };
+    default:
+      return { emoji: "📞", label: "通話", missed: false };
+  }
+}
+
+// テキストエリアの高さを内容に合わせて自動調整
+function autoGrowChatInput() {
+  const el = $("chat-input");
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 120) + "px";
+}
+
+function scrollChatToBottom() {
+  const box = $("chat-messages");
+  box.scrollTop = box.scrollHeight;
 }
 
 // ============================================================================
@@ -808,6 +1094,16 @@ async function handleSignal(msg) {
       loadFriends();
       break;
 
+    case "chat-message":
+      // 新着メッセージ（テキスト or 通話履歴）
+      onChatMessage(msg);
+      break;
+
+    case "messages-read":
+      // 相手が自分のメッセージを既読にした
+      onMessagesRead(msg);
+      break;
+
     case "call-invite":
       onIncomingCall(msg);
       break;
@@ -830,6 +1126,7 @@ async function handleSignal(msg) {
 
     case "call-unavailable":
       showToast("相手がオフラインのため通話できませんでした");
+      recordCall("missed");
       teardownCall(false);
       break;
 
@@ -852,6 +1149,11 @@ function updatePresence(userId, online) {
   if (f) {
     f.online = online;
     renderFriends();
+  }
+  // 開いているトークの相手なら、ヘッダーのオンライン表示も更新
+  if (state.chat && state.chat.peerId === userId) {
+    state.chat.online = online;
+    updateChatHeaderPresence();
   }
 }
 
@@ -885,6 +1187,7 @@ async function startCall(friend) {
 function cancelOutgoing() {
   if (state.call && state.call.role === "caller") {
     wsSend({ type: "call-cancel", to: state.call.peerId });
+    recordCall("canceled"); // 発信をキャンセル → 相手には不在着信として残る
   }
   teardownCall(false);
 }
@@ -902,6 +1205,7 @@ function onCallAccepted(msg) {
 function onCallRejected(msg) {
   if (!state.call || state.call.peerId !== msg.from) return;
   showToast(`${state.call.peerName} さんが応答できません`);
+  recordCall("rejected");
   teardownCall(false);
 }
 
@@ -1218,6 +1522,9 @@ function setupPeerConnection() {
           ? "通話が切断されました"
           : "相手とうまく接続できませんでした（ネットワーク環境が原因の場合があります）"
       );
+      // 接続前に失敗したら「通話に失敗」として記録（通話中に切れた場合は
+      // startedAt があるので endCall 側で「応答（通話時間つき）」になる）
+      recordCall("failed");
       endCall(true);
     } else if (st === "closed") {
       if (state.call.state === "in-call") {
@@ -1297,6 +1604,7 @@ function startInCallUI() {
 function onCallConnected() {
   if (!state.call || state.call.state === "in-call") return;
   state.call.state = "in-call";
+  state.call.startedAt = Date.now(); // 通話履歴の通話時間を測る起点（発信者が記録に使う）
   $("incall-status").textContent = "通話中";
   state.callStartAt = Date.now();
   clearInterval(state.timerInterval);
@@ -1384,13 +1692,44 @@ function endCall(notify) {
   if (state.call && notify) {
     wsSend({ type: "call-end", to: state.call.peerId });
   }
+  recordCall(null); // 通話済みなら「発信（通話時間つき）」として記録
   teardownCall(true);
 }
 
 function onRemoteEnd(msg) {
   if (state.call && state.call.peerId === msg.from) {
     showToast("通話が終了しました");
+    recordCall(null);
     teardownCall(false);
+  }
+}
+
+// 通話履歴を1件記録する（発信者側だけが記録し、両者のトークに残る）。
+//   startedAt があれば「応答（通話時間つき）」、無ければ reason（不在着信・拒否など）。
+// teardownCall より前に呼ぶこと（state.call をまだ参照できる必要がある）。
+async function recordCall(reason) {
+  const c = state.call;
+  if (!c || c.role !== "caller" || c.recorded) return;
+  c.recorded = true; // 二重記録を防ぐ
+
+  const peerId = c.peerId;
+  let result = reason || "missed";
+  let duration = 0;
+  if (c.startedAt) {
+    result = "answered";
+    duration = Math.floor((Date.now() - c.startedAt) / 1000);
+  }
+
+  const { ok, data } = await api("/api/messages/call", {
+    method: "POST",
+    body: JSON.stringify({ from: state.me.id, to: peerId, result, duration }),
+  });
+
+  // 発信者自身のトークを開いていれば、その場に履歴を反映する
+  if (ok && data.message && state.chat && state.chat.peerId === peerId) {
+    state.chat.messages.push(data.message);
+    renderChat();
+    scrollChatToBottom();
   }
 }
 
@@ -1424,6 +1763,47 @@ function teardownCall(closeMic) {
   state.muted = false;
   state.speakerOn = false;
   state.call = null;
+}
+
+// ============================================================================
+// 日時フォーマット（チャット用）
+// ============================================================================
+// 同じ日かを判定するためのキー（YYYY-MM-DD）
+function dayKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+// メッセージ脇の時刻（HH:MM）
+function formatMsgTime(ts) {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+// 日付区切りの表示（今日・昨日・M月D日(曜)）
+function formatDateSep(ts) {
+  const d = new Date(ts);
+  const today = new Date();
+  const yst = new Date(today);
+  yst.setDate(today.getDate() - 1);
+  if (dayKey(ts) === dayKey(today.getTime())) return "今日";
+  if (dayKey(ts) === dayKey(yst.getTime())) return "昨日";
+  const w = ["日", "月", "火", "水", "木", "金", "土"][d.getDay()];
+  const y = d.getFullYear() === today.getFullYear() ? "" : `${d.getFullYear()}年`;
+  return `${y}${d.getMonth() + 1}月${d.getDate()}日(${w})`;
+}
+// 一覧のプレビュー脇の時刻（今日は HH:MM、それ以外は M/D）
+function formatListTime(ts) {
+  const d = new Date(ts);
+  if (dayKey(ts) === dayKey(Date.now())) return formatMsgTime(ts);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+// 通話時間（秒 → M:SS または H:MM:SS）
+function formatDuration(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 // ============================================================================
