@@ -727,6 +727,246 @@ body {
   transform: translateX(-50%) translateY(0);
 }
 
+/* ---------- 友だち一覧: チャットプレビュー・未読バッジ ---------- */
+.friend-item { cursor: pointer; }
+.friend-item:hover { border-color: color-mix(in srgb, var(--theme) 40%, var(--border)); }
+
+.friend-preview {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 52vw;
+}
+.friend-preview.unread { color: var(--text); font-weight: 600; }
+
+.friend-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.friend-time {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.unread-badge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--theme);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+/* ---------- チャット画面 ---------- */
+.chat-screen {
+  display: none;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+}
+.chat-screen.active { display: flex; }
+
+.chat-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
+}
+.chat-back {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 30px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+.chat-peer-avatar-wrap { position: relative; flex-shrink: 0; }
+.chat-peer-avatar-wrap .avatar { width: 40px; height: 40px; font-size: 16px; }
+.chat-peer-avatar-wrap .presence-dot { border-color: var(--bg); }
+.chat-peer-info { flex: 1; min-width: 0; }
+.chat-peer-name {
+  font-weight: 700;
+  font-size: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-peer-status { font-size: 12px; color: var(--text-dim); }
+.chat-peer-status.online { color: var(--success); }
+.chat-call-btn {
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, var(--theme), color-mix(in srgb, var(--theme) 60%, #000));
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 14px var(--theme-soft);
+}
+.chat-call-btn:active { transform: scale(0.92); }
+.chat-call-btn:disabled { opacity: 0.4; box-shadow: none; cursor: default; }
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 14px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* 日付の区切り */
+.chat-date-sep {
+  align-self: center;
+  margin: 12px 0 8px;
+  padding: 3px 12px;
+  border-radius: 12px;
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+/* 吹き出し行（自分＝右、相手＝左） */
+.msg-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+  max-width: 100%;
+}
+.msg-row.mine { flex-direction: row-reverse; }
+
+.msg-bubble {
+  max-width: 74%;
+  padding: 9px 13px;
+  border-radius: 16px;
+  font-size: 15px;
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.msg-row.theirs .msg-bubble {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border-bottom-left-radius: 5px;
+}
+.msg-row.mine .msg-bubble {
+  background: linear-gradient(135deg, var(--theme), color-mix(in srgb, var(--theme) 78%, #000));
+  color: #fff;
+  border-bottom-right-radius: 5px;
+}
+
+/* 吹き出し脇の時刻・既読 */
+.msg-side {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.msg-row.mine .msg-side { align-items: flex-end; }
+.msg-read { color: var(--theme); font-weight: 600; }
+
+/* 通話履歴の行（中央寄せのシステム表示） */
+.msg-call {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 8px 16px;
+  border-radius: 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.msg-call .call-emoji { font-size: 15px; }
+.msg-call.missed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+.msg-call .call-time { color: var(--text-dim); font-size: 11.5px; margin-left: 2px; }
+
+.chat-empty {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.8;
+  margin: auto;
+  padding: 40px 20px;
+}
+
+/* 入力バー */
+.chat-input-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: blur(14px);
+  border-top: 1px solid var(--border);
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+}
+.chat-input {
+  flex: 1;
+  resize: none;
+  max-height: 120px;
+  padding: 11px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--text);
+  font-size: 16px;
+  font-family: inherit;
+  line-height: 1.4;
+  outline: none;
+}
+.chat-input:focus { border-color: var(--theme); }
+.chat-input::placeholder { color: var(--text-dim); }
+.chat-send {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, var(--theme), color-mix(in srgb, var(--theme) 60%, #000));
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 14px var(--theme-soft);
+}
+.chat-send:active { transform: scale(0.92); }
+.chat-send:disabled { opacity: 0.4; box-shadow: none; cursor: default; }
+
 /* ---------- レスポンシブ（タブレット・PC） ---------- */
 @media (min-width: 720px) {
   .avatar-lg { width: 130px; height: 130px; font-size: 52px; }

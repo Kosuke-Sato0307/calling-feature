@@ -61,9 +61,30 @@ CREATE TABLE friends (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (user_id, friend_id)
 );
+
+-- チャットメッセージ（テキストと通話履歴を同じテーブルに保存）
+CREATE TABLE messages (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  sender_id   TEXT NOT NULL,       -- 送信者ID（通話履歴では発信者）
+  receiver_id TEXT NOT NULL,       -- 受信者ID（通話履歴では着信者）
+  kind        TEXT NOT NULL,       -- 'text'（本文）/ 'call'（通話履歴 JSON）
+  body        TEXT NOT NULL,       -- text: 本文 / call: {"result","duration"}
+  created_at  INTEGER NOT NULL,
+  read_at     INTEGER              -- 既読時刻。NULL = 未読
+);
 ```
 
 友だち追加時は `(A,B)` と `(B,A)` の **2 行** を入れ、両者の一覧に相手が出るようにしています。
+
+### チャット・通話履歴
+
+- **1メッセージ = 1行**。テキストも通話履歴も同じ `messages` テーブルに入れ、`kind` で区別します。
+- **通話履歴は発信者側だけが記録**します（二重記録を防ぐため）。結果 `result` は
+  `answered`（`duration` 秒つき）/ `missed` / `rejected` / `canceled` / `failed`。
+  受信者側の画面では送信者が自分でないため「着信」「不在着信」等として表示されます。
+- **既読**は、相手がトークを開いたときに `read_at` を一括で更新し、送信者へ `messages-read` を配信します。
+- **保存期間は 90 日**。Durable Object の [Alarm API](https://developers.cloudflare.com/durable-objects/api/alarms/)
+  で日次に走らせ、古いメッセージを自動削除して無料枠のストレージを圧迫しないようにしています。
 
 ## HTTP API
 
@@ -74,7 +95,11 @@ CREATE TABLE friends (
 | `GET /api/user/:id` | ID でユーザー検索 | `{id, name, color}` / 404 |
 | `PATCH /api/user/:id` | `{name?, color?}` でプロフィール更新 | `{id, name, color}` |
 | `POST /api/friends` | `{userId, friendId}` で友だち追加（双方向） | `{ok, friend}` |
-| `GET /api/friends?userId=` | 友だち一覧（オンライン状態付き） | `{friends: [...]}` |
+| `GET /api/friends?userId=` | 友だち一覧（オンライン・未読数・直近メッセージ付き） | `{friends: [...]}` |
+| `GET /api/messages?userId=&peerId=` | 2者間の会話履歴（古い順・最新300件） | `{messages: [...]}` |
+| `POST /api/messages` | `{from, to, text}` でテキスト送信 | `{message}` |
+| `POST /api/messages/call` | `{from, to, result, duration}` で通話履歴を記録 | `{message}` |
+| `POST /api/messages/read` | `{userId, peerId}` で相手からのメッセージを既読化 | `{ok}` |
 
 ## WebSocket（`/ws?userId=`）
 
@@ -97,6 +122,8 @@ CREATE TABLE friends (
 - `presence` … `{userId, online}` オンライン状態の変化
 - `friend-added` … 誰かが自分を友だち追加した（一覧再取得を促す）
 - `call-unavailable` … 発信先がオフラインで届かなかった
+- `chat-message` … `{message}` 新着メッセージ（テキスト or 通話履歴）
+- `messages-read` … `{by}` 相手が自分のメッセージを既読にした（既読表示を更新）
 - `pong` … `ping` への応答（接続維持）
 
 ## 通話フロー（発信 → 通話中）
@@ -129,5 +156,6 @@ CREATE TABLE friends (
 
 - **STUN のみ**なので対称型 NAT 等では繋がらないことがある → Cloudflare Realtime の TURN 追加が候補。
 - **認証が簡易**（ID + 表示名）。本格運用するならトークン/パスワード方式へ。
-- ビデオ通話・グループ通話・着信音・通話履歴などは未実装（拡張しやすい構造）。
+- ビデオ通話・グループ通話・プッシュ通知などは未実装（拡張しやすい構造）。
+  チャット・既読・通話履歴は実装済み（`messages` テーブル）。
 - 全ユーザーが単一 DO に集約されるため、超大規模には向かない（個人〜小規模想定）。

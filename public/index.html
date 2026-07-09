@@ -95,6 +95,30 @@
     </main>
   </section>
 
+  <!-- ===================== チャット画面 ===================== -->
+  <section id="screen-chat" class="screen chat-screen">
+    <header class="chat-header">
+      <button class="chat-back" id="chat-back" title="戻る" aria-label="戻る">‹</button>
+      <div class="chat-peer-avatar-wrap">
+        <div class="avatar" id="chat-avatar">?</div>
+        <span class="presence-dot" id="chat-presence"></span>
+      </div>
+      <div class="chat-peer-info">
+        <div class="chat-peer-name" id="chat-peer-name">-</div>
+        <div class="chat-peer-status" id="chat-peer-status">オフライン</div>
+      </div>
+      <button class="chat-call-btn" id="chat-call" title="通話する">📞</button>
+    </header>
+
+    <div class="chat-messages" id="chat-messages"></div>
+
+    <div class="chat-input-bar">
+      <textarea id="chat-input" class="chat-input" rows="1" maxlength="2000"
+                placeholder="メッセージを入力"></textarea>
+      <button class="chat-send" id="chat-send" title="送信" aria-label="送信">➤</button>
+    </div>
+  </section>
+
   <!-- ===================== 設定モーダル ===================== -->
   <div id="settings-modal" class="modal">
     <div class="modal-card">

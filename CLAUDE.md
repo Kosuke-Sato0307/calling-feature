@@ -15,7 +15,8 @@ GitHub / Cloudflare の操作は逐一わかりやすく案内する方針。
 ## 確定している方針（勝手に変えない）
 
 - **Cloudflare Pages は使わない**。1 つの Worker で静的配信＋API＋Durable Object を兼ねる。
-- **音声通話のみ**（ビデオ通話は未実装。拡張候補）。
+- **音声通話 + テキストチャット**（ビデオ通話は未実装。拡張候補）。
+  チャットは既読表示つき。通話履歴はチャット内に残す（`messages` テーブルに集約、保存90日）。
 - **ログインはパスワードなし**。初回に表示名を入力→ランダムID発行→localStorage 保存。
   別端末からは `ID + 表示名` の一致でログイン（`POST /api/login`）。
 - **NAT越えは無料の公開 STUN のみ**（Google STUN）。TURN は未使用。
@@ -50,6 +51,10 @@ npm run deploy  # 手動デプロイ（通常は git push で自動デプロイ�
 - **全ユーザーが単一の Hub DO に集約**される。WebSocket は userId をタグにして受け入れ、
   `state.getWebSockets(userId)` でオンライン判定・宛先ルーティング。
 - 友だちは**双方向登録**（`friends` に2行）。
+- **チャット**は `messages` テーブル（`kind` で text/call を区別）。送信・既読は HTTP、
+  リアルタイム配信は WebSocket の `chat-message` / `messages-read`。
+  **通話履歴は発信者側だけが記録**（`recordCall`）して二重記録を防ぐ。
+  古いメッセージは DO の alarm で日次削除（90日）。
 - WebSocket メッセージの `from` は**必ずサーバー側で上書き**（なりすまし防止）。
 - 切断時の presence 判定は `isOnlineExcluding(userId, ws)` で**閉じかけの socket を除外**する
   （Hibernation の close ハンドラ中はまだ自分が一覧に残るため。ここは過去にハマった箇所）。
@@ -57,7 +62,8 @@ npm run deploy  # 手動デプロイ（通常は git push で自動デプロイ�
 ## 検証方法
 
 - API: `npm run dev` 後、`curl` で `/api/register` `/api/login` `/api/user/:id`
-  `/api/friends`（POST/GET）を確認。
+  `/api/friends`（POST/GET）を確認。チャットは `/api/messages`（GET/POST）
+  `/api/messages/read` `/api/messages/call` を確認。
 - シグナリング: Node 標準の `WebSocket` で2クライアント接続し、`presence` と
   `call-invite`/`call-accept`/`offer` の中継、切断時の `online:false` を確認
   （過去の検証スクリプトの考え方は ARCHITECTURE の通話フロー参照）。
@@ -74,6 +80,7 @@ npm run deploy  # 手動デプロイ（通常は git push で自動デプロイ�
 
 ## 今後の拡張候補（未実装）
 
-- ビデオ通話 / グループ通話 / 着信音 / 通話履歴 / プッシュ通知
+- ビデオ通話 / グループ通話 / 着信音 / プッシュ通知
+- チャットの画像・スタンプ送信（現状はテキストのみ）
 - TURN サーバー（Cloudflare Realtime）で繋がりやすさ向上
 - 本格的な認証（トークン/パスワード）
