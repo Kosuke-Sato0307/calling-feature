@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0e0f16" />
+  <title>Callin - 音声通話</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📞</text></svg>" />
+</head>
+<body>
+  <!-- 相手の音声を再生する要素 -->
+  <audio id="remoteAudio" autoplay playsinline></audio>
+
+  <!-- ===================== 登録画面 ===================== -->
+  <section id="screen-register" class="screen active">
+    <div class="auth-card">
+      <div class="brand">
+        <div class="brand-logo">📞</div>
+        <h1 class="brand-name">Callin</h1>
+        <p class="brand-tagline">シンプルでカッコいい音声通話</p>
+      </div>
+
+      <label class="field-label" for="reg-name">表示名</label>
+      <input id="reg-name" class="text-input" type="text" placeholder="名前を入力（例：たろう）" maxlength="30" autocomplete="off" />
+
+      <label class="field-label">テーマカラー</label>
+      <div id="reg-colors" class="color-grid"></div>
+
+      <button id="reg-submit" class="btn-primary btn-block">はじめる</button>
+      <p class="auth-error" id="reg-error"></p>
+
+      <p class="auth-switch">
+        別の端末で登録済みですか？
+        <a href="#" id="to-login">ログインはこちら</a>
+      </p>
+    </div>
+  </section>
+
+  <!-- ===================== ログイン画面 ===================== -->
+  <section id="screen-login" class="screen">
+    <div class="auth-card">
+      <div class="brand">
+        <div class="brand-logo">📞</div>
+        <h1 class="brand-name">ログイン</h1>
+        <p class="brand-tagline">ID と表示名で復元</p>
+      </div>
+
+      <label class="field-label" for="login-id">ユーザーID</label>
+      <input id="login-id" class="text-input" type="text" placeholder="例：ABCD2345" maxlength="8" autocomplete="off" autocapitalize="characters" />
+
+      <label class="field-label" for="login-name">表示名</label>
+      <input id="login-name" class="text-input" type="text" placeholder="登録した表示名" maxlength="30" autocomplete="off" />
+
+      <button id="login-submit" class="btn-primary btn-block">ログイン</button>
+      <p class="auth-error" id="login-error"></p>
+
+      <p class="auth-switch">
+        はじめての方は
+        <a href="#" id="to-register">新規登録へ</a>
+      </p>
+    </div>
+  </section>
+
+  <!-- ===================== メイン画面 ===================== -->
+  <section id="screen-main" class="screen">
+    <header class="app-header">
+      <div class="me">
+        <div class="avatar" id="me-avatar">?</div>
+        <div class="me-info">
+          <div class="me-name" id="me-name">-</div>
+          <button class="me-id" id="me-id" title="IDをコピー">ID: -</button>
+        </div>
+      </div>
+      <button class="icon-btn" id="open-settings" title="設定">⚙️</button>
+    </header>
+
+    <main class="app-main">
+      <!-- 友だち検索 -->
+      <div class="search-box">
+        <input id="search-id" class="text-input" type="text" placeholder="友だちのIDを入力して検索" maxlength="8" autocomplete="off" autocapitalize="characters" />
+        <button id="search-btn" class="btn-primary">検索</button>
+      </div>
+      <div id="search-result" class="search-result"></div>
+
+      <!-- 友だち一覧 -->
+      <div class="list-header">
+        <span>友だち</span>
+        <button class="link-btn" id="refresh-friends">更新</button>
+      </div>
+      <ul id="friends-list" class="friends-list"></ul>
+      <div id="friends-empty" class="empty-state">
+        まだ友だちがいません。<br />上の検索からIDで追加しましょう。
+      </div>
+    </main>
+  </section>
+
+  <!-- ===================== チャット画面 ===================== -->
+  <section id="screen-chat" class="screen chat-screen">
+    <header class="chat-header">
+      <button class="chat-back" id="chat-back" title="戻る" aria-label="戻る">‹</button>
+      <div class="chat-peer-avatar-wrap">
+        <div class="avatar" id="chat-avatar">?</div>
+        <span class="presence-dot" id="chat-presence"></span>
+      </div>
+      <div class="chat-peer-info">
+        <div class="chat-peer-name" id="chat-peer-name">-</div>
+        <div class="chat-peer-status" id="chat-peer-status">オフライン</div>
+      </div>
+      <button class="chat-call-btn" id="chat-call" title="通話する">📞</button>
+    </header>
+
+    <div class="chat-messages" id="chat-messages"></div>
+
+    <div class="chat-input-bar">
+      <textarea id="chat-input" class="chat-input" rows="1" maxlength="2000"
+                placeholder="メッセージを入力"></textarea>
+      <button class="chat-send" id="chat-send" title="送信" aria-label="送信">➤</button>
+    </div>
+  </section>
+
+  <!-- ===================== 設定モーダル ===================== -->
+  <div id="settings-modal" class="modal">
+    <div class="modal-card">
+      <h2 class="modal-title">設定</h2>
+
+      <label class="field-label" for="set-name">表示名</label>
+      <input id="set-name" class="text-input" type="text" maxlength="30" />
+
+      <label class="field-label">アイコン画像</label>
+      <div class="avatar-edit">
+        <div class="avatar avatar-preview" id="set-avatar-preview">?</div>
+        <div class="avatar-edit-actions">
+          <label class="btn-ghost" for="set-avatar-input">画像を選択</label>
+          <input id="set-avatar-input" type="file" accept="image/*" hidden />
+          <button type="button" class="link-btn" id="set-avatar-clear">画像を削除</button>
+        </div>
+      </div>
+
+      <label class="field-label">テーマカラー</label>
+      <div id="set-colors" class="color-grid"></div>
+
+      <label class="field-label" for="mic-select">マイク（音声入力）</label>
+      <select id="mic-select" class="text-input select-input"></select>
+
+      <div id="speaker-group">
+        <label class="field-label" for="speaker-select">スピーカー（音声出力）</label>
+        <select id="speaker-select" class="text-input select-input"></select>
+      </div>
+
+      <p class="field-hint" id="device-hint">
+        USBヘッドセットを使う場合は、上のマイク／スピーカーで選んでください。
+      </p>
+
+      <div class="modal-actions">
+        <button class="btn-ghost" id="settings-cancel">閉じる</button>
+        <button class="btn-primary" id="settings-save">保存</button>
+      </div>
+      <p class="auth-error" id="set-error"></p>
+
+      <hr class="divider" />
+      <button class="btn-danger btn-block" id="logout-btn">ログアウト</button>
+    </div>
+  </div>
+
+  <!-- ===================== 発信中モーダル ===================== -->
+  <div id="calling-modal" class="modal call-overlay">
+    <div class="call-panel">
+      <div class="call-status">発信中…</div>
+      <div class="avatar avatar-lg pulse" id="calling-avatar">?</div>
+      <div class="call-name" id="calling-name">-</div>
+      <div class="call-actions">
+        <button class="call-btn hangup" id="cancel-call" title="キャンセル">📞</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== 着信モーダル ===================== -->
+  <div id="incoming-modal" class="modal call-overlay">
+    <div class="call-panel">
+      <div class="call-status">着信中…</div>
+      <div class="avatar avatar-lg pulse" id="incoming-avatar">?</div>
+      <div class="call-name" id="incoming-name">-</div>
+      <div class="call-actions two">
+        <button class="call-btn hangup" id="reject-call" title="拒否">📞</button>
+        <button class="call-btn accept" id="accept-call" title="応答">📞</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== 通話中画面 ===================== -->
+  <div id="incall-modal" class="modal call-overlay">
+    <div class="call-panel">
+      <div class="call-status" id="incall-status">通話中</div>
+      <div class="avatar avatar-lg" id="incall-avatar">?</div>
+      <div class="call-name" id="incall-name">-</div>
+      <div class="call-timer" id="incall-timer">00:00</div>
+      <div class="call-controls">
+        <button class="ctrl-btn" id="btn-mute">
+          <span class="ctrl-icon">🎤</span>
+          <span class="ctrl-label">ミュート</span>
+        </button>
+        <button class="ctrl-btn" id="btn-speaker">
+          <span class="ctrl-icon">🔈</span>
+          <span class="ctrl-label">スピーカー</span>
+        </button>
+      </div>
+      <div class="volume-row">
+        <span class="volume-icon" id="vol-icon">🔉</span>
+        <input id="vol-slider" class="volume-slider" type="range" min="0" max="20" value="10"
+               aria-label="通話音量" />
+      </div>
+      <div class="call-actions">
+        <button class="call-btn hangup" id="end-call" title="通話終了">📞</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== アイコン拡大表示 ===================== -->
+  <div id="avatar-preview-modal" class="modal avatar-preview-overlay">
+    <button class="avatar-preview-close" id="avatar-preview-close" title="閉じる" aria-label="閉じる">×</button>
+    <div class="avatar-preview-stage" id="avatar-preview-stage"></div>
+  </div>
+
+  <!-- トースト通知 -->
+  <div id="toast" class="toast"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# 依存関係
+node_modules/
+
+# Wrangler / Cloudflare のローカル作業ファイル
+.wrangler/
+.dev.vars
+dist/
+
+# ログ
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# OS / エディタ
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
