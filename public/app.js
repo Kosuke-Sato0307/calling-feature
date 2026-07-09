@@ -43,7 +43,10 @@ const state = {
   friends: [],       // 友だち一覧
   regColor: THEME_COLORS[0],
   setColor: THEME_COLORS[0],
-  setAvatar: null,   // 設定モーダルで選択中のアイコン画像（data URL / null）
+  setAvatar: null,   // 設定モーダルで選択中のアイコン画像（一覧用サムネイル。data URL / null）
+  // 拡大表示用の高画質アイコン。undefined = 変更なし（保存時に送らず現状維持）、
+  // data URL = 新しい画像、null = 画像を削除。
+  setAvatarFull: undefined,
 
   // 通話関連
   call: null,        // { peerId, peerName, role: 'caller'|'callee', state }
@@ -156,10 +159,24 @@ function showScreen(name) {
 function openModal(id) { $(id).classList.add("active"); }
 function closeModal(id) { $(id).classList.remove("active"); }
 
-// 友だちのアイコン画像を拡大表示する（<img> を使わず背景画像で表示し、保存操作を抑止）
-function openAvatarPreview(avatar) {
-  $("avatar-preview-stage").style.backgroundImage = `url("${avatar}")`;
+// アイコン画像を拡大表示する（<img> を使わず背景画像で表示し、保存操作を抑止）。
+// まず手持ちのサムネイルで即座に開き、その裏で高画質版を取りに行って差し替える
+// （拡大時の画質が粗くならないように）。userId が無ければサムネイルのみ表示。
+let avatarPreviewToken = 0;
+async function openAvatarPreview(userId, fallbackAvatar) {
+  const stage = $("avatar-preview-stage");
+  const token = ++avatarPreviewToken; // 連続で開き直したとき古い取得結果で上書きしないための番号
+  stage.style.backgroundImage = fallbackAvatar ? `url("${fallbackAvatar}")` : "none";
   openModal("avatar-preview-modal");
+
+  if (!userId) return;
+  try {
+    const { ok, data } = await api("/api/user/" + encodeURIComponent(userId) + "/avatar");
+    // 取得中に別のアイコンを開いた／閉じた場合は差し替えない
+    if (ok && data.avatar && token === avatarPreviewToken) {
+      stage.style.backgroundImage = `url("${data.avatar}")`;
+    }
+  } catch {}
 }
 
 // ============================================================================
@@ -231,6 +248,10 @@ function bindEvents() {
 
   // --- メイン ---
   $("me-id").addEventListener("click", () => copyText(state.me.id, "IDをコピーしました"));
+  // 自分のアイコンも友だちと同じようにタップで拡大表示（画像がある時だけ）
+  $("me-avatar").addEventListener("click", () => {
+    if (state.me && state.me.avatar) openAvatarPreview(state.me.id, state.me.avatar);
+  });
   $("search-btn").addEventListener("click", handleSearch);
   $("search-id").addEventListener("keydown", (e) => { if (e.key === "Enter") handleSearch(); });
   $("refresh-friends").addEventListener("click", loadFriends);
@@ -254,6 +275,7 @@ function bindEvents() {
   $("set-avatar-input").addEventListener("change", handleAvatarFile);
   $("set-avatar-clear").addEventListener("click", () => {
     state.setAvatar = null;
+    state.setAvatarFull = null; // 高画質版も削除する
     $("set-avatar-input").value = "";
     updateSettingsAvatarPreview();
   });
@@ -361,6 +383,7 @@ function enterApp() {
   $("me-name").textContent = state.me.name;
   $("me-id").textContent = "ID: " + state.me.id;
   setAvatar($("me-avatar"), state.me.name, state.me.color, state.me.avatar);
+  updateMeAvatarClickable();
 
   showScreen("main");
   connectWs();
@@ -455,11 +478,11 @@ function renderFriends() {
         </div>
       </div>`;
 
-    // アイコン画像がある場合はタップで拡大表示
+    // アイコン画像がある場合はタップで拡大表示（拡大時は高画質版を取りに行く）
     if (f.avatar) {
       const av = li.querySelector(".friend-avatar-wrap .avatar");
       av.classList.add("clickable");
-      av.addEventListener("click", () => openAvatarPreview(f.avatar));
+      av.addEventListener("click", () => openAvatarPreview(f.id, f.avatar));
     }
 
     // ID コピー
@@ -487,6 +510,7 @@ function openSettings() {
   $("set-name").value = state.me.name;
   state.setColor = state.me.color;
   state.setAvatar = state.me.avatar ?? null;
+  state.setAvatarFull = undefined; // 画像を選び直さない限り高画質版は現状維持
   $("set-error").textContent = "";
   $("set-avatar-input").value = ""; // 同じファイルを選び直せるようにクリア
   updateSettingsAvatarPreview();
@@ -503,23 +527,29 @@ function updateSettingsAvatarPreview() {
   setAvatar($("set-avatar-preview"), state.me ? state.me.name : "", state.setColor, state.setAvatar);
 }
 
-// ファイル選択時: 小さな正方形サムネイルに変換して保留アイコンにする
+// ファイル選択時: 2種類の画像を作って保留する。
+//   - setAvatar     : 一覧用の小さな正方形サムネイル（軽い）
+//   - setAvatarFull : 拡大表示用の高画質画像（元の画像に近い大きめ）
 async function handleAvatarFile(e) {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
   $("set-error").textContent = "";
   try {
-    state.setAvatar = await fileToAvatarDataUrl(file);
+    const { small, full } = await fileToAvatarDataUrls(file);
+    state.setAvatar = small;
+    state.setAvatarFull = full;
     updateSettingsAvatarPreview();
   } catch {
     $("set-error").textContent = "画像を読み込めませんでした";
   }
 }
 
-// アップロード画像を 128px の正方形サムネイル（JPEG data URL）に変換する。
-// 元の画像データは保存せず、この小さな「アイコン情報」だけを保存に使う。
-function fileToAvatarDataUrl(file) {
-  const SIZE = 128;
+// アップロード画像を 2種類の JPEG data URL に変換して返す（画像のデコードは1回だけ）。
+//   small: 128px の正方形サムネイル（一覧表示用。軽くするため小さく切り抜く）
+//   full : 長辺 800px までに収めた高画質版（拡大表示用。元の縦横比のまま）
+function fileToAvatarDataUrls(file) {
+  const THUMB = 128;      // サムネイルの一辺
+  const FULL_MAX = 800;   // 高画質版の長辺の上限
   return new Promise((resolve, reject) => {
     if (!file.type || !file.type.startsWith("image/")) {
       reject(new Error("not_image"));
@@ -531,16 +561,27 @@ function fileToAvatarDataUrl(file) {
       const img = new Image();
       img.onerror = () => reject(new Error("decode_error"));
       img.onload = () => {
-        // 中央を正方形にクロップして 128x128 に描画
+        // --- サムネイル: 中央を正方形にクロップして 128x128 ---
         const side = Math.min(img.width, img.height);
         const sx = (img.width - side) / 2;
         const sy = (img.height - side) / 2;
-        const canvas = document.createElement("canvas");
-        canvas.width = SIZE;
-        canvas.height = SIZE;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, sx, sy, side, side, 0, 0, SIZE, SIZE);
-        resolve(canvas.toDataURL("image/jpeg", 0.8));
+        const thumbCanvas = document.createElement("canvas");
+        thumbCanvas.width = THUMB;
+        thumbCanvas.height = THUMB;
+        thumbCanvas.getContext("2d").drawImage(img, sx, sy, side, side, 0, 0, THUMB, THUMB);
+        const small = thumbCanvas.toDataURL("image/jpeg", 0.8);
+
+        // --- 高画質版: 縦横比を保ったまま長辺 800px までに縮小（拡大でも粗くならないように）---
+        const scale = Math.min(1, FULL_MAX / Math.max(img.width, img.height));
+        const fw = Math.max(1, Math.round(img.width * scale));
+        const fh = Math.max(1, Math.round(img.height * scale));
+        const fullCanvas = document.createElement("canvas");
+        fullCanvas.width = fw;
+        fullCanvas.height = fh;
+        fullCanvas.getContext("2d").drawImage(img, 0, 0, fw, fh);
+        const full = fullCanvas.toDataURL("image/jpeg", 0.9);
+
+        resolve({ small, full });
       };
       img.src = reader.result;
     };
@@ -660,10 +701,14 @@ async function handleSaveSettings() {
   err.textContent = "";
   if (!name) { err.textContent = "表示名を入力してください"; return; }
 
+  const payload = { name, color: state.setColor, avatar: state.setAvatar ?? null };
+  // 高画質版は「変更あり（新しい画像 or 削除）」のときだけ送る。undefined なら現状維持。
+  if (state.setAvatarFull !== undefined) payload.avatarFull = state.setAvatarFull;
+
   setBusy($("settings-save"), true);
   const { ok, data } = await api("/api/user/" + encodeURIComponent(state.me.id), {
     method: "PATCH",
-    body: JSON.stringify({ name, color: state.setColor, avatar: state.setAvatar ?? null }),
+    body: JSON.stringify(payload),
   });
   setBusy($("settings-save"), false);
 
@@ -679,6 +724,7 @@ async function handleSaveSettings() {
   applyTheme(state.me.color);
   $("me-name").textContent = state.me.name;
   setAvatar($("me-avatar"), state.me.name, state.me.color, state.me.avatar);
+  updateMeAvatarClickable();
   closeModal("settings-modal");
   showToast("設定を保存しました");
 }
@@ -1393,6 +1439,11 @@ function avatarMarkup(name, color, avatar, cls = "avatar") {
     return `<div class="${cls}" style="background-image:url('${escapeHtml(avatar)}');background-size:cover;background-position:center"></div>`;
   }
   return `<div class="${cls}" style="background:${escapeHtml(color || "#5b8cff")}">${escapeHtml(initial(name))}</div>`;
+}
+
+// 自分のアイコンを「タップで拡大できる」状態にするかを切り替える（画像がある時だけ）。
+function updateMeAvatarClickable() {
+  $("me-avatar").classList.toggle("clickable", !!(state.me && state.me.avatar));
 }
 
 // アイコン要素を描画する。avatar（画像の data URL）があれば画像、無ければ頭文字＋色。

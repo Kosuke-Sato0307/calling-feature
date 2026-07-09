@@ -520,8 +520,8 @@ body {
 .modal-actions .btn-primary,
 .modal-actions .btn-ghost { flex: 1; }
 
-/* アイコン拡大表示 */
-.friend-avatar-wrap .avatar.clickable { cursor: pointer; }
+/* アイコン拡大表示（自分・友だち共通でタップできることを示す） */
+.avatar.clickable { cursor: pointer; }
 
 .avatar-preview-overlay {
   padding: 40px 20px;
